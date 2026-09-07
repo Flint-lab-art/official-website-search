@@ -36,8 +36,12 @@ def _is_domain_hit(r):
     return config.TARGET_DOMAIN in r["cite"] or config.TARGET_DOMAIN in r["href"]
 
 
-def run_bing(session, keyword, shot_dir):
-    page = session.new_page()
+def run_bing(session, keyword, shot_dir, page=None):
+    """搜索 keyword，翻前 MAX_PAGES 页，命中即停。
+    page 可传入复用的标签页（不传则新建/用完关闭）。"""
+    own_page = page is None
+    if page is None:
+        page = session.new_page()
     try:
         for pn in range(1, config.MAX_PAGES + 1):
             first = (pn - 1) * 10 + 1
@@ -61,7 +65,8 @@ def run_bing(session, keyword, shot_dir):
     except Exception as e:
         return {"status": config.ST_ERROR, "evidence": f"异常:{e}"}
     finally:
-        session.close_page(page)
+        if own_page:
+            session.close_page(page)
 
 
 def _screenshot(page, keyword, pn, engine, shot_dir):

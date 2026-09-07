@@ -63,10 +63,13 @@ def _next_page(page, page_no):
     return True
 
 
-def run_baidu(session, keyword, shot_dir):
+def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None):
     """搜索 keyword，翻前 MAX_PAGES 页，命中即停。
+    page 可传入复用的标签页（不传则新建/用完关闭）。
     返回 dict: status / rank / page / evidence / screenshot"""
-    page = session.new_page()
+    own_page = page is None
+    if page is None:
+        page = session.new_page()
     try:
         page.goto(SEARCH_URL.format(quote(keyword)), timeout=60000,
                   wait_until="domcontentloaded")
@@ -75,7 +78,9 @@ def run_baidu(session, keyword, shot_dir):
         for pn in range(1, config.MAX_PAGES + 1):
             # 验证码检测
             if is_captcha(page, "baidu"):
-                wait_for_captcha(page, "baidu", keyword)
+                r = wait_for_captcha(page, "baidu", keyword, skip_evt=skip_evt, notify=notify)
+                if r == "skip":
+                    return {"status": config.ST_ERROR, "evidence": "验证码跳过"}
                 # 完成后重新加载当前页
                 page.reload(wait_until="domcontentloaded")
                 page.wait_for_timeout(config.PAGE_WAIT_MS)
@@ -96,7 +101,8 @@ def run_baidu(session, keyword, shot_dir):
     except Exception as e:
         return {"status": config.ST_ERROR, "evidence": f"异常:{e}"}
     finally:
-        session.close_page(page)
+        if own_page:
+            session.close_page(page)
 
 
 def _screenshot(page, keyword, pn, engine, shot_dir):

@@ -16,9 +16,13 @@ def is_captcha(page, engine):
             return True
     return False
 
-def wait_for_captcha(page, engine, keyword, timeout_s=600):
+def wait_for_captcha(page, engine, keyword, skip_evt=None, timeout_s=600, notify=None):
     """出现验证码时暂停，提示用户手动完成。
-    自动轮询页面：用户完成滑块后页面跳回结果页，立即继续。"""
+    自动轮询页面：用户完成滑块后页面跳回结果页，立即继续。
+    skip_evt 被触发（GUI 点「跳过当前词」）时返回 'skip'。
+    notify(engine, keyword) 用于 GUI 提示。"""
+    if notify:
+        notify(engine, keyword)
     print("\n" + "=" * 56)
     print(f"[验证码] {engine} 搜索「{keyword}」时要求人机验证。")
     print("浏览器窗口已打开，请在窗口里完成滑块/点选验证。")
@@ -28,26 +32,43 @@ def wait_for_captcha(page, engine, keyword, timeout_s=600):
     while True:
         time.sleep(3)
         waited += 3
+        if skip_evt is not None and skip_evt.is_set():
+            print("[验证码] 已跳过该词。")
+            return "skip"
         try:
             if not is_captcha(page, engine):
                 print("[验证码] 已通过，继续。")
-                return
+                return "ok"
         except Exception:
             pass
         if waited >= timeout_s:
             waited = 0
             print("[验证码] 仍未完成，请在浏览器窗口继续操作…")
 
+def _clean_session_files(profile_dir):
+    """清理 Chromium 上次异常退出残留的标签页会话文件（不影响 cookie/登录态）"""
+    import os
+    for name in ("Current Session", "Last Session", "Current Tabs", "Last Tabs"):
+        p = os.path.join(profile_dir, name)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+
 class BrowserSession:
     def __init__(self, profile_dir=None):
         self._pw = sync_playwright().start()
+        profile = profile_dir or config.PROFILE_DIR
+        _clean_session_files(profile)
         self.ctx = self._pw.chromium.launch_persistent_context(
-            profile_dir or config.PROFILE_DIR,
+            profile,
             headless=False,                       # 必须显示窗口（用户人工验证）
             user_agent=config.USER_AGENT,
             viewport=config.VIEWPORT,
             locale="zh-CN",
-            args=["--start-maximized"],
+            args=["--start-maximized", "--disable-session-crashed-bubble", "--no-first-run"],
         )
         self.pages = []
 
