@@ -1,6 +1,6 @@
 # Official Website Search（官网检索器）
 
-**语言 / Language**：[中文](README.md) | [English](README.en.md)
+**语言 / Language**：[中文](README.zh-CN.md) | [English](README.md)
 
 批量关键词可见性监控工具：在 **百度 / 必应 × PC / 移动端（共 4 个平台）** 各搜索前 10 页，自动判定每个关键词是否出现目标官网，记录自然排名与页码，命中页整页截图，结果一键导出 Excel。带本地 Web 控制面板，支持断点续跑、验证码人工介入、按平台单独补跑。
 
