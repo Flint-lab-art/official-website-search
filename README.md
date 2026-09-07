@@ -127,6 +127,16 @@ python healthcheck.py --captcha-wait 180  # 验证码人工等待秒数（默认
 
 覆盖：配置常量、百度 PC/移动官网标识判定、必应域名判定、db 任务表/断点续跑/单平台重跑。无浏览器依赖，秒级跑完。
 
+## 适配其他品牌（Fork 使用）
+
+本工具按 Elo 品牌内置判定口径，监控其他品牌只需改 3 处：
+
+1. `core/config.py`：`TARGET_DOMAIN`（目标域名）、`BAIDU_OFFICIAL_MARKS`（百度来源行的官网标识，如「XX品牌官网」）、`SCREENSHOT_DIR`（截图保存目录）
+2. `keywords.txt`：换成自己的关键词清单（每行一个，UTF-8/GBK 均可，程序自动识别）
+3. `README.md`：标题与适用场景描述
+
+改完运行 `scripts/install.*` 安装依赖即可使用。面板、断点续跑、自定义导出、健康检查、单元测试均与具体品牌无关，开箱即用。
+
 ## 环境
 
 - Python 3.10+ / Playwright / Chromium（Windows / Linux / macOS）
