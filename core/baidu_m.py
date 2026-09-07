@@ -144,6 +144,7 @@ def run_baidu_m(session, keyword, shot_dir, skip_evt=None, notify=None, page=Non
                   wait_until="domcontentloaded")
         page.wait_for_timeout(config.PAGE_WAIT_MS)
 
+        zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
             if is_captcha(page, "baidu"):
                 r = wait_for_captcha(page, "baidu", keyword, skip_evt=skip_evt, notify=notify)
@@ -154,7 +155,14 @@ def run_baidu_m(session, keyword, shot_dir, skip_evt=None, notify=None, page=Non
 
             _close_popups(page)  # 先关弹窗广告，避免遮挡/干扰解析
 
-            for rank, src, title in _parse_page(page):
+            parsed = _parse_page(page)
+            # 熔断：连续多页 0 条（页面结构失效/被拦截）→ 解析异常，避免误报未命中
+            zero_pages = zero_pages + 1 if len(parsed) == 0 else 0
+            if zero_pages >= config.ZERO_RESULT_BREAK:
+                return {"status": config.ST_MALFUNCTION,
+                        "evidence": f"连续{zero_pages}页解析出0条结果，疑似页面结构变化或搜索被拦截"}
+
+            for rank, src, title in parsed:
                 if _is_hit(src, title):
                     _close_popups(page)  # 截图前再关一次弹窗
                     shot = _screenshot(page, keyword, pn, "baidu_m", shot_dir)

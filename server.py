@@ -31,7 +31,8 @@ from core.bing_m import run_bing_m
 PORT = 27531
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON = os.path.join(BASE_DIR, "favicon.png")
-ST_LABEL = {"pending": "等待", "hit": "命中", "none": "未命中", "error": "错误", "restricted": "受限"}
+ST_LABEL = {"pending": "等待", "hit": "命中", "none": "未命中", "error": "错误",
+            "restricted": "受限", "malfunction": "解析异常"}
 ENG_LABEL = {"baidu": "百度PC", "bing": "必应PC", "baidu_m": "百度移动", "bing_m": "必应移动"}
 
 # 导出可选列：(id, 表头, 行索引, 类型, 列宽)
@@ -448,7 +449,8 @@ class Handler(BaseHTTPRequestHandler):
             THIN = Side(style="thin", color="D9D9D9")
             BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
             ST_FILL = {"hit": ("C6EFCE", "006100"), "none": ("F2F2F2", "808080"),
-                       "error": ("FFC7CE", "9C0006"), "restricted": ("FFEB9C", "9C6500")}
+                       "error": ("FFC7CE", "9C0006"), "restricted": ("FFEB9C", "9C6500"),
+                       "malfunction": ("E3DFF2", "5B4B8A")}
             REV_LABEL = {v: k for k, v in ST_LABEL.items()}
 
             def _style_head(wsx, ncol):
@@ -646,6 +648,8 @@ td.kw{max-width:280px;overflow:hidden;text-overflow:ellipsis;}
 .t-hit{background:rgba(31,163,92,.12);color:var(--green);}
 .t-none{background:rgba(138,143,152,.12);color:var(--gray);}
 .t-error{background:rgba(192,57,43,.12);color:var(--red);}
+.t-restricted{background:rgba(185,119,14,.12);color:var(--orange);}
+.t-malfunction{background:rgba(91,75,138,.12);color:#5B4B8A;}
 .t-pending{background:rgba(138,143,152,.08);color:var(--sub);}
 a.shot{color:var(--accent);text-decoration:none;}
 a.shot:hover{text-decoration:underline;}
@@ -753,7 +757,8 @@ input[type=file]{display:none;}
       body:body?JSON.stringify(body):undefined}).then(function(r){return r.json();});
   }
   function tagCls(s){
-    return s==="命中"?"t-hit":s==="未命中"?"t-none":s==="错误"?"t-error":"t-pending";
+    return s==="命中"?"t-hit":s==="未命中"?"t-none":s==="错误"?"t-error":
+           s==="受限"?"t-restricted":s==="解析异常"?"t-malfunction":"t-pending";
   }
   function esc(v){return v==null?"":String(v);}
   function render(){

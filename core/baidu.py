@@ -75,6 +75,7 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None)
                   wait_until="domcontentloaded")
         page.wait_for_timeout(config.PAGE_WAIT_MS)
 
+        zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
             # 验证码检测
             if is_captcha(page, "baidu"):
@@ -86,6 +87,11 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None)
                 page.wait_for_timeout(config.PAGE_WAIT_MS)
 
             results = _parse_page(page)
+            # 熔断：连续多页 0 条（页面结构失效/被拦截）→ 解析异常，避免误报未命中
+            zero_pages = zero_pages + 1 if len(results) == 0 else 0
+            if zero_pages >= config.ZERO_RESULT_BREAK:
+                return {"status": config.ST_MALFUNCTION,
+                        "evidence": f"连续{zero_pages}页解析出0条结果，疑似页面结构变化或搜索被拦截"}
             for r in results:
                 if _is_elo_official(r["title"], r["source"]):
                     shot = _screenshot(page, keyword, pn, "baidu", shot_dir)

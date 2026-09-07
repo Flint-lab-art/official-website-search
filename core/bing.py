@@ -59,6 +59,7 @@ def run_bing(session, keyword, shot_dir, page=None):
     if page is None:
         page = session.new_page()
     try:
+        zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
             if pn == 1:
                 # P1：必应首页 → 输入关键词 → 回车（同用户手动搜索）
@@ -87,6 +88,11 @@ def run_bing(session, keyword, shot_dir, page=None):
             if _is_restricted(page):
                 return {"status": config.ST_RESTRICTED,
                         "evidence": f"第{pn}页：必应受限页（结果被过滤），无法判定"}
+            # 熔断：连续多页 0 条（页面结构失效/被拦截）→ 解析异常，避免误报未命中
+            zero_pages = zero_pages + 1 if len(results) == 0 else 0
+            if zero_pages >= config.ZERO_RESULT_BREAK:
+                return {"status": config.ST_MALFUNCTION,
+                        "evidence": f"连续{zero_pages}页解析出0条结果，疑似页面结构变化或搜索被拦截"}
             # 未命中：页尾判断，防止无限翻
             if len(results) == 0 and pn > 1:
                 return {"status": config.ST_NONE, "evidence": f"第{pn}页无结果"}

@@ -44,3 +44,7 @@ ST_HIT = "hit"          # 命中
 ST_NONE = "none"        # 10 页未命中
 ST_ERROR = "error"
 ST_RESTRICTED = "restricted"  # 搜索引擎合规过滤/受限页，无法判定
+ST_MALFUNCTION = "malfunction"  # 解析异常：连续多页 0 条，疑似页面结构变化/被拦截
+
+# ---- 熔断 ----
+ZERO_RESULT_BREAK = 3  # 连续 N 页解析出 0 条自然结果 → 判「解析异常」，避免误报「未命中」

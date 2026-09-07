@@ -68,6 +68,7 @@ def run_bing_m(session, keyword, shot_dir, page=None):
         page.wait_for_load_state("domcontentloaded", timeout=30000)
         page.wait_for_timeout(config.PAGE_WAIT_MS)
 
+        zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
             if pn > 1:
                 first = (pn - 1) * 10 + 1
@@ -75,7 +76,8 @@ def run_bing_m(session, keyword, shot_dir, page=None):
                           wait_until="domcontentloaded")
                 page.wait_for_timeout(config.PAGE_WAIT_MS)
 
-            for rank, cite in _parse_page(page):
+            parsed = _parse_page(page)
+            for rank, cite in parsed:
                 if config.TARGET_DOMAIN in cite:
                     shot = _screenshot(page, keyword, pn, "bing_m", shot_dir)
                     evidence = f"自然第{rank}位｜cite:{cite[:40]}"
@@ -84,6 +86,11 @@ def run_bing_m(session, keyword, shot_dir, page=None):
             if _is_restricted(page):
                 return {"status": config.ST_RESTRICTED,
                         "evidence": f"第{pn}页：必应受限页（结果被过滤），无法判定"}
+            # 熔断：连续多页 0 条（页面结构失效/被拦截）→ 解析异常，避免误报未命中
+            zero_pages = zero_pages + 1 if len(parsed) == 0 else 0
+            if zero_pages >= config.ZERO_RESULT_BREAK:
+                return {"status": config.ST_MALFUNCTION,
+                        "evidence": f"连续{zero_pages}页解析出0条结果，疑似页面结构变化或搜索被拦截"}
             if pn < config.MAX_PAGES:
                 session.random_delay()
         return {"status": config.ST_NONE, "evidence": f"前{config.MAX_PAGES}页未出现 {config.TARGET_DOMAIN}"}
