@@ -6,7 +6,7 @@ P1 用「首页→输入→回车」模拟真人（消除直达 URL 搜索偏差
 """
 from urllib.parse import quote
 from core import config
-from core.engine import scroll_trigger
+from core.engine import scroll_trigger, wait_render_ready
 
 HOME_URL = "https://www.bing.com/?mkt=zh-CN"
 SEARCH_URL = "https://cn.bing.com/search?q={kw}&first={first}&mkt=zh-CN"
@@ -20,6 +20,7 @@ def _screenshot(page, keyword, pn, engine, shot_dir):
     os.makedirs(folder, exist_ok=True)
     shot = os.path.join(folder, f"{safe}_{engine}_p{pn}.png")
     try:
+        wait_render_ready(page)  # 必应异步渲染：DOM 出现 ≠ 已绘制，截图前等渲染完成
         scroll_trigger(page)
         page.screenshot(path=shot, full_page=True)
         return shot

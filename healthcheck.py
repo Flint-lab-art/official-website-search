@@ -135,6 +135,44 @@ CHECKS = {"baidu": check_baidu, "bing": check_bing,
 PLATFORM_LABEL = {"baidu": "百度PC", "bing": "必应PC", "baidu_m": "百度移动", "bing_m": "必应移动"}
 
 
+def run_healthcheck(platforms, captcha_wait=120, log=print):
+    """执行健康检查（真实浏览器）。返回 [(平台, 词, 结论, 说明), ...]
+    platforms: ['baidu','bing','baidu_m','bing_m'] 的子集
+    log: 进度回调（默认 print，面板可传 STATE.log）"""
+    samples = HIT_SAMPLES + NEG_SAMPLES
+    log(f"健康检查开始｜平台: {', '.join(PLATFORM_LABEL[p] for p in platforms)}")
+    log(f"样本词: {', '.join(samples)}（验证码可人工在窗口完成）")
+
+    all_results = []
+    for eng in platforms:
+        log(f"===== {PLATFORM_LABEL[eng]} =====")
+        session = BrowserSession(mobile=eng.endswith("_m"))
+        try:
+            for kw in samples:
+                st, msg = CHECKS[eng](session, kw, captcha_wait)
+                all_results.append((eng, kw, st, msg))
+                mark = {"PASS": "  OK", "WARN": " WARN", "FAIL": " FAIL"}[st]
+                log(f"  {mark}  {kw:<12} {msg}")
+                time.sleep(1)  # 词与词之间缓一下
+        finally:
+            session.close()
+    stop_playwright()
+
+    fails = [r for r in all_results if r[2] == "FAIL"]
+    warns = [r for r in all_results if r[2] == "WARN"]
+    log("===== 汇总 =====")
+    log(f"  通过 {len(all_results) - len(fails) - len(warns)} ｜ 受限 {len(warns)} ｜ 失败 {len(fails)}")
+    for eng, kw, st in fails:
+        log(f"  FAIL {PLATFORM_LABEL[eng]} / {kw}")
+    if fails:
+        log("→ 疑似搜索引擎改版或选择器失效，请人工打开页面核查，必要时更新 core/ 下的解析器")
+    elif warns:
+        log("→ 有受限页（平台过滤所致，非解析器问题），可忽略")
+    else:
+        log("→ 全部正常，判定逻辑工作有效")
+    return all_results
+
+
 def main():
     ap = argparse.ArgumentParser(description="官网检索器健康检查")
     ap.add_argument("--platforms", default="baidu,bing",
@@ -151,38 +189,8 @@ def main():
         print(f"[ERROR] 未知平台: {unknown}")
         sys.exit(2)
 
-    samples = HIT_SAMPLES + NEG_SAMPLES
-    print(f"健康检查开始｜平台: {', '.join(PLATFORM_LABEL[p] for p in platforms)}")
-    print(f"样本词: {', '.join(samples)}（验证码可人工在窗口完成）")
-
-    all_results = []
-    for eng in platforms:
-        print(f"\n===== {PLATFORM_LABEL[eng]} =====")
-        session = BrowserSession(mobile=eng.endswith("_m"))
-        try:
-            for kw in samples:
-                st, msg = CHECKS[eng](session, kw, args.captcha_wait)
-                all_results.append((eng, kw, st))
-                mark = {"PASS": "  OK", "WARN": " WARN", "FAIL": " FAIL"}[st]
-                print(f"  {mark}  {kw:<12} {msg}")
-                time.sleep(1)  # 词与词之间缓一下
-        finally:
-            session.close()
-    stop_playwright()
-
-    fails = [r for r in all_results if r[2] == "FAIL"]
-    warns = [r for r in all_results if r[2] == "WARN"]
-    print("\n===== 汇总 =====")
-    print(f"  通过 {len(all_results) - len(fails) - len(warns)} ｜ 受限 {len(warns)} ｜ 失败 {len(fails)}")
-    for eng, kw, st in fails:
-        print(f"  FAIL {PLATFORM_LABEL[eng]} / {kw}")
-    if fails:
-        print("→ 疑似搜索引擎改版或选择器失效，请人工打开页面核查，必要时更新 core/ 下的解析器")
-        sys.exit(1)
-    if warns:
-        print("→ 有受限页（平台过滤所致，非解析器问题），可忽略")
-    print("→ 全部正常，判定逻辑工作有效")
-    sys.exit(0)
+    results = run_healthcheck(platforms, captcha_wait=args.captcha_wait)
+    sys.exit(1 if any(r[2] == "FAIL" for r in results) else 0)
 
 
 if __name__ == "__main__":

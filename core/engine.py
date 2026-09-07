@@ -17,6 +17,21 @@ def scroll_trigger(page):
         pass
 
 
+def wait_render_ready(page, selector="li.b_algo"):
+    """截图前等页面真实渲染完成。
+    必应结果区为异步渲染：DOM 出现（可判定命中）≠ 已绘制，截图太早会白屏。
+    等元素可见 + 网络空闲 + 短延时后返回。"""
+    try:
+        page.wait_for_selector(selector, state="visible", timeout=8000)
+    except Exception:
+        pass
+    try:
+        page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    page.wait_for_timeout(1200)
+
+
 def is_captcha(page, engine):
     """判断当前页是否为验证码页"""
     url = page.url

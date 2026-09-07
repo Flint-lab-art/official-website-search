@@ -4,7 +4,7 @@ import os, re, random
 from urllib.parse import quote
 
 from . import config
-from .engine import scroll_trigger
+from .engine import scroll_trigger, wait_render_ready
 
 SEARCH_URL = "https://cn.bing.com/search?q={}&ensearch=0&first={}"
 
@@ -113,6 +113,8 @@ def _screenshot(page, keyword, pn, engine, shot_dir):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"{safe}_{engine}_p{pn}.png")
     try:
+        # 必应结果区为异步渲染：DOM 出现 ≠ 已绘制，截图前强制等渲染完成
+        wait_render_ready(page)
         scroll_trigger(page)
         page.screenshot(path=path, full_page=True)
         return path

@@ -111,6 +111,37 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None)
             session.close_page(page)
 
 
+def _wait_ai_output(page):
+    """百度 PC AI 摘要/智能体为流式输出（逐字生成）：
+    等 AI 容器内容连续 2 次采样不变（约 2 秒稳定）视为生成完成，最长 ~22s。
+    不点「展开剩余」按钮——保持页面折叠原貌。"""
+    try:
+        ai = page.locator("[class*='wenda']").first
+        has_ai = ai.count() > 0
+    except Exception:
+        has_ai = False
+    if not has_ai:
+        page.wait_for_timeout(800)
+        return
+    last_text, stable = None, 0
+    for _ in range(20):
+        try:
+            txt = ai.inner_text(timeout=3000) or ""
+        except Exception:
+            break
+        if "正在生成" in txt or "生成中" in txt:
+            last_text, stable = None, 0
+        elif txt == last_text:
+            stable += 1
+            if stable >= 2:
+                break
+        else:
+            stable = 0
+        last_text = txt
+        page.wait_for_timeout(1000)
+    page.wait_for_timeout(1500)
+
+
 def _screenshot(page, keyword, pn, engine, shot_dir):
     import os, re
     safe = re.sub(r'[\\/:*?"<>|]', "_", keyword)
@@ -119,6 +150,8 @@ def _screenshot(page, keyword, pn, engine, shot_dir):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"{safe}_{engine}_p{pn}.png")
     try:
+        if engine == "baidu":
+            _wait_ai_output(page)  # 等百度 AI 摘要流式输出完，避免截到一半
         scroll_trigger(page)
         page.screenshot(path=path, full_page=True)
         return path

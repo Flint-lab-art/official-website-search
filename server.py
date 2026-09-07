@@ -73,6 +73,7 @@ class State:
     def __init__(self):
         self.lock = threading.Lock()
         self.worker = None
+        self.healthcheck = None
         self.pause_evt = threading.Event()
         self.stop_evt = threading.Event()
         self.skip_evt = threading.Event()
@@ -302,9 +303,22 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _hc_worker(self):
+        """健康检查线程：跑 run_healthcheck，进度写入日志区"""
+        try:
+            from healthcheck import run_healthcheck
+            run_healthcheck(["baidu", "bing"], captcha_wait=120, log=STATE.log)
+            STATE.log("健康检查完成")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            STATE.log(f"健康检查异常: {e}")
+        finally:
+            with STATE.lock:
+                STATE.healthcheck = None
+
     def do_GET(self):
         return self._handle(self._do_GET)
-
     def _do_GET(self):
         path = urlparse(self.path).path
         if path == "/":
@@ -332,6 +346,8 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 if STATE.worker and STATE.worker.is_alive():
                     return self._send_json({"error": "已在运行"})
+                if STATE.healthcheck and STATE.healthcheck.is_alive():
+                    return self._send_json({"error": "健康检查进行中，请先等它完成"})
             pending = db.load_pending(db.init_db(config.DB_PATH))
             if not pending:
                 return self._send_json({"error": "没有待处理关键词"})
@@ -372,6 +388,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/stop":
             STATE.stop_evt.set()
             STATE.log("正在停止…")
+            return self._send_json({"ok": True})
+        if path == "/api/healthcheck":
+            with STATE.lock:
+                if STATE.worker and STATE.worker.is_alive():
+                    return self._send_json({"error": "采集任务运行中，请先停止"})
+                if STATE.healthcheck and STATE.healthcheck.is_alive():
+                    return self._send_json({"error": "健康检查已在进行"})
+                t = threading.Thread(target=self._hc_worker, daemon=True)
+                STATE.healthcheck = t
+                t.start()
+            STATE.log("健康检查已启动（真实浏览器验证解析逻辑，约 1-2 分钟）…")
             return self._send_json({"ok": True})
         if path == "/api/import":
             data = self._read_body()
@@ -655,6 +682,9 @@ a.shot{color:var(--accent);text-decoration:none;}
 a.shot:hover{text-decoration:underline;}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-top:12px;}
 .panel h2{font-size:13px;font-weight:600;color:var(--sub);padding:10px 16px 6px;}
+.loghead{display:flex;align-items:center;gap:10px;padding:8px 16px 0;}
+.loghead h2{padding:0;flex:1;}
+.loghead button{padding:4px 10px;font-size:12px;background:var(--card2);border:1px solid var(--line);border-radius:6px;cursor:pointer;}
 #log{height:150px;overflow-y:auto;padding:2px 16px 12px;font:12px/1.7 Consolas,"Cascadia Mono",monospace;color:#3A3F45;white-space:pre-wrap;}
 #log .t{color:#A0A5AB;margin-right:8px;}
 .wrap{max-width:1180px;margin:0 auto;}
@@ -717,7 +747,7 @@ input[type=file]{display:none;}
   </div>
 
   <div class="panel">
-    <h2>日志</h2>
+    <div class="loghead"><h2>日志</h2><button id="btnHC" title="真实浏览器跑样本词，验证解析逻辑是否仍有效（与采集互斥）">🧪 健康检查</button></div>
     <div id="log"></div>
   </div>
 </div>
@@ -835,6 +865,12 @@ input[type=file]{display:none;}
   btn.skip.onclick=function(){api("/api/skip","POST");};
   btn.stop.onclick=function(){api("/api/stop","POST");};
   by("btnExport").onclick=function(){renderExportCols();by("exportModal").classList.add("show");};
+  by("btnHC").onclick=function(){
+    if(by("btnHC").disabled)return;
+    api("/api/healthcheck","POST",{}).then(function(r){
+      if(r.error){alert(r.error);return;}
+    });
+  };
   by("exportCancel").onclick=function(){by("exportModal").classList.remove("show");};
   by("expAll").onclick=function(){document.querySelectorAll("#exportCols input").forEach(function(i){i.checked=true;});};
   by("expNone").onclick=function(){document.querySelectorAll("#exportCols input").forEach(function(i){i.checked=false;});};
