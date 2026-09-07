@@ -136,3 +136,13 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# ===== 本项目运行产物 =====
+# 浏览器用户目录（含 cookie/登录态，敏感）
+profile/
+# 命中页全图截图（数据产物）
+screenshots/
+# 运行数据库（结果数据）
+results.db
+# 开发采样/临时文件
+dev/
