@@ -147,3 +147,6 @@ results.db
 # 开发采样/临时文件
 dev/
 profile_mobile/
+
+# 业务关键词清单（本地使用，不进仓库）
+keywords.txt

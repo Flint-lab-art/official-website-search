@@ -14,8 +14,13 @@ def load_keywords():
         print(f"缺少关键词文件: {config.KEYWORDS_FILE}")
         print("请创建 keywords.txt，每行一个关键词。")
         sys.exit(1)
-    with open(config.KEYWORDS_FILE, encoding="utf-8") as f:
-        return [ln.strip() for ln in f if ln.strip()]
+    try:
+        with open(config.KEYWORDS_FILE, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except UnicodeDecodeError:
+        with open(config.KEYWORDS_FILE, encoding="gbk", errors="replace") as f:
+            lines = f.read().splitlines()
+    return [ln.strip() for ln in lines if ln.strip()]
 
 
 def main():
