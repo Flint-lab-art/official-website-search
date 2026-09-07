@@ -79,6 +79,9 @@ class State:
         self.skip_evt = threading.Event()
         self.current = None      # (kw, engine)
         self.captcha = None      # (engine, kw)
+        self.start_ts = None     # 本次任务开始时刻（time.time），用于计时
+        self.done = 0            # 已处理完的关键词数
+        self.total_kw = 0        # 本次任务关键词总数
         self.logs = deque(maxlen=800)
 
     def log(self, text):
@@ -129,7 +132,7 @@ class Worker(threading.Thread):
                 STATE.log("移动浏览器已就绪")
             if not need_pc and not need_m:
                 with STATE.lock:
-                    STATE.worker, STATE.current, STATE.captcha = None, None, None
+                    STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = None, None, None, None
                 return
         except Exception as e:
             STATE.log(f"!! 浏览器启动失败: {e}")
@@ -141,7 +144,7 @@ class Worker(threading.Thread):
             except Exception:
                 pass
             with STATE.lock:
-                STATE.worker, STATE.current, STATE.captcha = None, None, None
+                STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = None, None, None, None
             return
         pages = {}
         if session:
@@ -151,6 +154,10 @@ class Worker(threading.Thread):
             pages["baidu_m"] = m_session.new_page()
             pages["bing_m"] = m_session.new_page()
         done = 0
+        with STATE.lock:
+            STATE.start_ts = time.time()
+            STATE.done = 0
+            STATE.total_kw = len(self.pending)
         try:
             for kw, engs in self.pending.items():
                 if STATE.stop_evt.is_set():
@@ -188,6 +195,8 @@ class Worker(threading.Thread):
                         break
 
                 done += 1
+                with STATE.lock:
+                    STATE.done = done
         except Exception as e:
             STATE.log(f"!! 运行异常: {e}")
         finally:
@@ -200,7 +209,7 @@ class Worker(threading.Thread):
             except Exception:
                 pass
             with STATE.lock:
-                STATE.worker, STATE.current, STATE.captcha = None, None, None
+                STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = None, None, None, None
         s = db.summary(conn)
         STATE.log(f"===== 完成：百度PC命中 {s['baidu_hit']}/{s['total']}，必应PC命中 {s['bing_hit']}/{s['total']}，"
                   f"百度移动命中 {s['baidu_m_hit']}/{s['total']}，必应移动命中 {s['bing_m_hit']}/{s['total']} =====")
@@ -250,9 +259,13 @@ def _api_state():
         paused = STATE.pause_evt.is_set()
         current = STATE.current
         captcha = STATE.captcha
+        start_ts = STATE.start_ts
+        done = STATE.done
+        total_kw = STATE.total_kw
     return {
         "running": running, "paused": paused,
         "current": current, "captcha": captcha,
+        "start_ts": start_ts, "done": done, "total_kw": total_kw,
         "total": len(tasks),
         "hits": hits,
         "tasks": tasks,
@@ -727,6 +740,8 @@ input[type=file]{display:none;}
 
   <div class="statbar">
     <span>进度 <b id="stProg">0 / 0</b></span>
+    <span>已用 <b id="stElapsed">--</b></span>
+    <span>预计剩余 <b id="stEta">--</b></span>
     <span>百度PC <b id="stBd">0</b></span>
     <span>必应PC <b id="stBg">0</b></span>
     <span>百度移动 <b id="stBm">0</b></span>
@@ -815,11 +830,25 @@ input[type=file]{display:none;}
     }
     by("tbody").innerHTML=h;
   }
+  function fmtDur(sec){
+    sec=Math.max(0,Math.round(sec));
+    var h=Math.floor(sec/3600), m=Math.floor(sec%3600/60), s=sec%60;
+    return (h>0?(h+":"):"")+String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+  }
   function poll(){
     fetch("/api/state").then(function(r){return r.json();}).then(function(s){
       var sig=JSON.stringify(s.tasks);
       if(sig!==lastTasks){lastTasks=sig;tbl=s.tasks;render();}
       by("stProg").textContent=(s.total-(s.tasks.filter(function(t){return t.bd!=="等待"&&t.bg!=="等待"&&t.bm!=="等待"&&t.gm!=="等待";}).length))+" / "+s.total;
+      if(s.running&&s.start_ts){
+        var el=Date.now()/1000-s.start_ts;
+        var per=el/Math.max(s.done,1);
+        by("stElapsed").textContent=fmtDur(el);
+        by("stEta").textContent=fmtDur(per*Math.max(s.total_kw-s.done,0));
+      }else{
+        by("stElapsed").textContent="--";
+        by("stEta").textContent="--";
+      }
       by("stBd").textContent=s.hits[0];
       by("stBg").textContent=s.hits[1];
       by("stBm").textContent=s.hits[2];
