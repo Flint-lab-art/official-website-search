@@ -1,5 +1,7 @@
 # Official Website Search
 
+**Language / 语言**: [English](README.en.md) | [中文](README.md)
+
 A batch keyword visibility monitoring tool: searches the **top 10 pages** on **Baidu / Bing × PC / Mobile (4 platforms in total)**, automatically determines whether the target official website appears for each keyword, records the organic rank and page number, takes full-page screenshots of hit pages, and exports results to Excel with one click. Includes a local web control panel with resume-from-breakpoint, manual CAPTCHA handling, and per-platform retry.
 
 > For **brand owners / SEO teams**: regularly audit your official website's visibility and rankings on major search engines, and quantify "which keywords, which page and position, whether visible".
