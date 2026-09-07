@@ -146,3 +146,4 @@ screenshots/
 results.db
 # 开发采样/临时文件
 dev/
+profile_mobile/

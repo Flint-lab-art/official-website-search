@@ -108,7 +108,10 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None)
 def _screenshot(page, keyword, pn, engine, shot_dir):
     import os, re
     safe = re.sub(r'[\\/:*?"<>|]', "_", keyword)
-    path = os.path.join(shot_dir, f"{safe}_{engine}_p{pn}.png")
+    sub = config.SHOT_PLATFORM_DIR.get(engine, "")
+    folder = os.path.join(shot_dir, sub)
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{safe}_{engine}_p{pn}.png")
     try:
         page.screenshot(path=path, full_page=True)
         return path

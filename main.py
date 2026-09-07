@@ -4,7 +4,7 @@ import os, sys, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from core import config, db
-from core.engine import BrowserSession
+from core.engine import BrowserSession, stop_playwright
 from core.baidu import run_baidu
 from core.bing import run_bing
 
@@ -52,6 +52,7 @@ def main():
             print(f"   必应: {tag} 排名{g.get('rank')} 第{g.get('page')}页 | {g.get('evidence','')[:60]}")
     finally:
         session.close()
+        stop_playwright()
 
     s = db.summary(conn)
     print(f"\n===== 汇总：百度命中 {s['baidu_hit']}/{s['total']}，必应命中 {s['bing_hit']}/{s['total']} =====")

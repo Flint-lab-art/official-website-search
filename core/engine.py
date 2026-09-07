@@ -16,9 +16,10 @@ def is_captcha(page, engine):
             return True
     return False
 
-def wait_for_captcha(page, engine, keyword, skip_evt=None, timeout_s=600, notify=None):
+def wait_for_captcha(page, engine, keyword, skip_evt=None, timeout_s=1800, notify=None):
     """出现验证码时暂停，提示用户手动完成。
     自动轮询页面：用户完成滑块后页面跳回结果页，立即继续。
+    默认等待 30 分钟（人工验证可能需要较长时间）。
     skip_evt 被触发（GUI 点「跳过当前词」）时返回 'skip'。
     notify(engine, keyword) 用于 GUI 提示。"""
     if notify:
@@ -57,19 +58,47 @@ def _clean_session_files(profile_dir):
                 pass
 
 
+_PW = None
+
+
+def _pw_singleton():
+    """Playwright 实例单例：Sync API 同一线程只能 start 一次，多个浏览器共享一个实例"""
+    global _PW
+    if _PW is None:
+        _PW = sync_playwright().start()
+    return _PW
+
+
+def stop_playwright():
+    global _PW
+    if _PW is not None:
+        try:
+            _PW.stop()
+        except Exception:
+            pass
+        _PW = None
+
+
 class BrowserSession:
-    def __init__(self, profile_dir=None):
-        self._pw = sync_playwright().start()
-        profile = profile_dir or config.PROFILE_DIR
+    def __init__(self, profile_dir=None, mobile=False):
+        self._pw = _pw_singleton()
+        profile = profile_dir or (config.MOBILE_PROFILE_DIR if mobile else config.PROFILE_DIR)
         _clean_session_files(profile)
-        self.ctx = self._pw.chromium.launch_persistent_context(
-            profile,
+        kw = dict(
             headless=False,                       # 必须显示窗口（用户人工验证）
-            user_agent=config.USER_AGENT,
-            viewport=config.VIEWPORT,
             locale="zh-CN",
             args=["--start-maximized", "--disable-session-crashed-bubble", "--no-first-run"],
         )
+        if mobile:
+            kw["user_agent"] = config.MOBILE_USER_AGENT
+            kw["viewport"] = config.MOBILE_VIEWPORT
+            kw["device_scale_factor"] = config.MOBILE_DSF
+            kw["is_mobile"] = True
+            kw["has_touch"] = True
+        else:
+            kw["user_agent"] = config.USER_AGENT
+            kw["viewport"] = config.VIEWPORT
+        self.ctx = self._pw.chromium.launch_persistent_context(profile, **kw)
         self.pages = []
 
     def new_page(self):
@@ -91,7 +120,4 @@ class BrowserSession:
             self.ctx.close()
         except Exception:
             pass
-        try:
-            self._pw.stop()
-        except Exception:
-            pass
+        # 不 stop 共享 _pw（由 stop_playwright() 统一收尾）

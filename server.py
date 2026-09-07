@@ -22,21 +22,25 @@ for _s in (sys.stdout, sys.stderr):
             pass
 
 from core import config, db
-from core.engine import BrowserSession
+from core.engine import BrowserSession, stop_playwright
 from core.baidu import run_baidu
 from core.bing import run_bing
+from core.baidu_m import run_baidu_m
+from core.bing_m import run_bing_m
 
 PORT = 27531
 ST_LABEL = {"pending": "等待", "hit": "命中", "none": "未命中", "error": "错误"}
+ENG_LABEL = {"baidu": "百度PC", "bing": "必应PC", "baidu_m": "百度移动", "bing_m": "必应移动"}
 
 
-def conclusion(bd, bg):
-    b, g = bd == "hit", bg == "hit"
-    if b and g:
-        return "官网可见"
-    if b or g:
-        return "部分可见"
-    if bd == "error" or bg == "error":
+def conclusion(*st):
+    hits = [s == "hit" for s in st]
+    n = sum(hits)
+    if n == len(st):
+        return "官网全可见"
+    if n:
+        return f"部分可见 {n}/{len(st)}"
+    if any(s == "error" for s in st):
         return "含错误"
     return "10页未见"
 
@@ -67,10 +71,14 @@ STATE = State()
 
 
 # ================= 采集 Worker =================
+RUNNERS = {"baidu": run_baidu, "bing": run_bing,
+           "baidu_m": run_baidu_m, "bing_m": run_bing_m}
+
 class Worker(threading.Thread):
-    def __init__(self, keywords):
+    def __init__(self, pending):
+        """pending: {keyword: [engines 待跑列表]}"""
         super().__init__(daemon=True)
-        self.keywords = keywords
+        self.pending = pending
 
     def notify_captcha(self, engine, keyword):
         with STATE.lock:
@@ -79,13 +87,48 @@ class Worker(threading.Thread):
 
     def run(self):
         conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
-        session = BrowserSession()
-        # 两个引擎各固定一个标签页复用，避免每次新建标签
-        bd_page = session.new_page()
-        bg_page = session.new_page()
+        # 按待跑引擎决定开哪些浏览器窗口：只开需要的
+        engs_needed = set()
+        for engs in self.pending.values():
+            engs_needed.update(engs)
+        need_pc = bool(engs_needed & {"baidu", "bing"})
+        need_m = bool(engs_needed & {"baidu_m", "bing_m"})
+        session = m_session = None
+        try:
+            if need_pc:
+                STATE.log("启动浏览器（PC 版）…")
+                session = BrowserSession()
+                STATE.log("PC 浏览器已就绪")
+            if need_m:
+                STATE.log("启动浏览器（移动版）…")
+                m_session = BrowserSession(mobile=True)
+                STATE.log("移动浏览器已就绪")
+            if not need_pc and not need_m:
+                with STATE.lock:
+                    STATE.worker, STATE.current, STATE.captcha = None, None, None
+                return
+        except Exception as e:
+            STATE.log(f"!! 浏览器启动失败: {e}")
+            try:
+                if session:
+                    session.close()
+                if m_session:
+                    m_session.close()
+            except Exception:
+                pass
+            with STATE.lock:
+                STATE.worker, STATE.current, STATE.captcha = None, None, None
+            return
+        pages = {}
+        if session:
+            pages["baidu"] = session.new_page()
+            pages["bing"] = session.new_page()
+        if m_session:
+            pages["baidu_m"] = m_session.new_page()
+            pages["bing_m"] = m_session.new_page()
         done = 0
         try:
-            for kw in self.keywords:
+            for kw, engs in self.pending.items():
                 if STATE.stop_evt.is_set():
                     break
                 while STATE.pause_evt.is_set() and not STATE.stop_evt.is_set():
@@ -95,45 +138,48 @@ class Worker(threading.Thread):
                 if STATE.skip_evt.is_set():
                     STATE.skip_evt.clear()
 
-                with STATE.lock:
-                    STATE.current, STATE.captcha = (kw, "百度"), None
-                STATE.log(f"▶ {kw}")
-
-                r = run_baidu(session, kw, config.SCREENSHOT_DIR,
-                              skip_evt=STATE.skip_evt, notify=self.notify_captcha,
-                              page=bd_page)
-                db.update_result(conn, kw, "baidu", r["status"],
-                                 r.get("rank"), r.get("page"),
-                                 r.get("evidence"), r.get("shot"))
-                STATE.log(f"   百度 {ST_LABEL.get(r['status'], r['status'])} "
-                          f"排名{r.get('rank')} 第{r.get('page')}页 | {r.get('evidence', '')[:50]}")
-
-                if STATE.skip_evt.is_set():
-                    STATE.skip_evt.clear()
-                    db.update_result(conn, kw, "bing", "error", evidence="验证码跳过")
-                    STATE.log("   已跳过（验证码）")
-                else:
+                for eng in engs:
+                    func = RUNNERS[eng]
+                    if STATE.stop_evt.is_set():
+                        break
                     with STATE.lock:
-                        STATE.current, STATE.captcha = (kw, "必应"), None
-                    g = run_bing(session, kw, config.SCREENSHOT_DIR, page=bg_page)
-                    db.update_result(conn, kw, "bing", g["status"],
-                                     g.get("rank"), g.get("page"),
-                                     g.get("evidence"), g.get("shot"))
-                    STATE.log(f"   必应 {ST_LABEL.get(g['status'], g['status'])} "
-                              f"排名{g.get('rank')} 第{g.get('page')}页 | {g.get('evidence', '')[:50]}")
+                        STATE.current, STATE.captcha = (kw, ENG_LABEL[eng]), None
+                    STATE.log(f"▶ {kw} [{ENG_LABEL[eng]}]")
+                    sess = session if eng in ("baidu", "bing") else m_session
+                    if eng in ("baidu", "baidu_m"):
+                        r = func(sess, kw, config.SCREENSHOT_DIR,
+                                 skip_evt=STATE.skip_evt, notify=self.notify_captcha,
+                                 page=pages[eng])
+                    else:
+                        r = func(sess, kw, config.SCREENSHOT_DIR, page=pages[eng])
+                    db.update_result(conn, kw, eng, r["status"],
+                                     r.get("rank"), r.get("page"),
+                                     r.get("evidence"), r.get("shot"))
+                    STATE.log(f"   {ENG_LABEL[eng]} {ST_LABEL.get(r['status'], r['status'])} "
+                              f"排名{r.get('rank')} 第{r.get('page')}页 | {r.get('evidence', '')[:50]}")
+                    if STATE.skip_evt.is_set():
+                        STATE.skip_evt.clear()
+                        db.update_result(conn, kw, eng, "error", evidence="验证码跳过")
+                        STATE.log(f"   已跳过（验证码）")
+                        break
 
                 done += 1
         except Exception as e:
             STATE.log(f"!! 运行异常: {e}")
         finally:
             try:
-                session.close()
+                if session:
+                    session.close()
+                if m_session:
+                    m_session.close()
+                stop_playwright()
             except Exception:
                 pass
             with STATE.lock:
                 STATE.worker, STATE.current, STATE.captcha = None, None, None
         s = db.summary(conn)
-        STATE.log(f"===== 完成：百度命中 {s['baidu_hit']}/{s['total']}，必应命中 {s['bing_hit']}/{s['total']} =====")
+        STATE.log(f"===== 完成：百度PC命中 {s['baidu_hit']}/{s['total']}，必应PC命中 {s['bing_hit']}/{s['total']}，"
+                  f"百度移动命中 {s['baidu_m_hit']}/{s['total']}，必应移动命中 {s['bing_m_hit']}/{s['total']} =====")
 
 
 # ================= HTTP 服务 =================
@@ -141,7 +187,10 @@ def _db_rows():
     conn = sqlite3.connect(config.DB_PATH)
     rows = conn.execute(
         "SELECT keyword, baidu_status, baidu_rank, baidu_page, bing_status, bing_rank, bing_page, "
-        "baidu_shot, bing_shot FROM tasks ORDER BY id").fetchall()
+        "baidu_shot, bing_shot, "
+        "baidu_m_status, baidu_m_rank, baidu_m_page, baidu_m_shot, "
+        "bing_m_status, bing_m_rank, bing_m_page, bing_m_shot "
+        "FROM tasks ORDER BY id").fetchall()
     conn.close()
     return rows
 
@@ -149,20 +198,29 @@ def _db_rows():
 def _api_state():
     rows = _db_rows()
     tasks = []
-    for kw, bs, br, bp, gs, gr, gp, bsh, gsh in rows:
+    for kw, bs, br, bp, gs, gr, gp, bsh, gsh, bms, bmr, bmp, bmsh, gms, gmr, gmp, gmsh in rows:
         tasks.append({
-            "kw": kw, "bd": ST_LABEL.get(bs, bs), "bd_rank": br, "bd_page": bp,
+            "kw": kw,
+            "bd": ST_LABEL.get(bs, bs), "bd_rank": br, "bd_page": bp,
             "bg": ST_LABEL.get(gs, gs), "bg_rank": gr, "bg_page": gp,
-            "concl": conclusion(bs, gs),
+            "bm": ST_LABEL.get(bms, bms), "bm_rank": bmr, "bm_page": bmp,
+            "gm": ST_LABEL.get(gms, gms), "gm_rank": gmr, "gm_page": gmp,
+            "concl": conclusion(bs, gs, bms, gms),
             "shot_bd": bsh if (bs == "hit" and bsh) else "",
             "shot_bg": gsh if (gs == "hit" and gsh) else "",
+            "shot_bm": bmsh if (bms == "hit" and bmsh) else "",
+            "shot_gm": gmsh if (gms == "hit" and gmsh) else "",
         })
-    hits = [0, 0]
+    hits = [0, 0, 0, 0]
     for t in tasks:
         if t["bd"] == "命中":
             hits[0] += 1
         if t["bg"] == "命中":
             hits[1] += 1
+        if t["bm"] == "命中":
+            hits[2] += 1
+        if t["gm"] == "命中":
+            hits[3] += 1
     with STATE.lock:
         running = STATE.worker is not None and STATE.worker.is_alive()
         paused = STATE.pause_evt.is_set()
@@ -257,6 +315,19 @@ class Handler(BaseHTTPRequestHandler):
             w.start()
             STATE.log(f"开始处理 {len(pending)} 个关键词…")
             return self._send_json({"ok": True, "pending": len(pending)})
+        if path == "/api/retry":
+            data = self._read_body()
+            kw = str(data.get("keyword", "")).strip()
+            eng = str(data.get("engine", "")).strip()
+            if eng not in ("baidu", "bing", "baidu_m", "bing_m"):
+                return self._send_json({"error": "未知平台"})
+            conn = db.init_db(config.DB_PATH)
+            n = conn.execute("SELECT COUNT(*) FROM tasks WHERE keyword=?", (kw,)).fetchone()[0]
+            if not n:
+                return self._send_json({"error": "关键词不存在"})
+            db.retry_engine(conn, kw, eng)
+            STATE.log(f"已重置「{kw}」的 {ENG_LABEL[eng]}，可点开始补跑")
+            return self._send_json({"ok": True})
         if path == "/api/pause":
             if STATE.pause_evt.is_set():
                 STATE.pause_evt.clear()
@@ -279,8 +350,10 @@ class Handler(BaseHTTPRequestHandler):
             kws = [str(k).strip() for k in kws if str(k).strip()]
             if not kws:
                 return self._send_json({"error": "没有有效关键词"})
-            db.ensure_keywords(db.init_db(config.DB_PATH), kws)
-            STATE.log(f"已导入 {len(kws)} 个关键词")
+            engines = data.get("engines") or list(db.ALL_ENGINES)
+            engines = [e for e in engines if e in db.ALL_ENGINES]
+            db.ensure_keywords(db.init_db(config.DB_PATH), kws, engines=engines)
+            STATE.log(f"已导入 {len(kws)} 个关键词（{'、'.join(ENG_LABEL[e] for e in engines)}）")
             return self._send_json({"ok": True, "count": len(kws)})
         if path == "/api/clear":
             conn = db.init_db(config.DB_PATH)
@@ -300,42 +373,60 @@ class Handler(BaseHTTPRequestHandler):
             from openpyxl.styles import Font
             conn = db.init_db(config.DB_PATH)
             rows = conn.execute(
-                "SELECT keyword, baidu_status, baidu_rank, baidu_page, baidu_evidence, baidu_shot, "
-                "bing_status, bing_rank, bing_page, bing_evidence, bing_shot, updated_at "
-                "FROM tasks ORDER BY id").fetchall()
+                "SELECT keyword, "
+                "baidu_status, baidu_rank, baidu_page, baidu_evidence, baidu_shot, "
+                "bing_status, bing_rank, bing_page, bing_evidence, bing_shot, "
+                "baidu_m_status, baidu_m_rank, baidu_m_page, baidu_m_evidence, baidu_m_shot, "
+                "bing_m_status, bing_m_rank, bing_m_page, bing_m_evidence, bing_m_shot, "
+                "updated_at FROM tasks ORDER BY id").fetchall()
             conn.close()
             wb = Workbook()
             ws = wb.active
             ws.title = "明细"
-            head = ["关键词", "百度", "百度排名", "百度页码", "百度依据", "百度截图",
-                    "必应", "必应排名", "必应页码", "必应依据", "必应截图", "结论", "更新时间"]
+            head = ["关键词",
+                    "百度PC", "百度PC排名", "百度PC页码", "百度PC依据", "百度PC截图",
+                    "必应PC", "必应PC排名", "必应PC页码", "必应PC依据", "必应PC截图",
+                    "百度移动", "百度移动排名", "百度移动页码", "百度移动依据", "百度移动截图",
+                    "必应移动", "必应移动排名", "必应移动页码", "必应移动依据", "必应移动截图",
+                    "结论", "更新时间"]
             ws.append(head)
             for c in ws[1]:
                 c.font = Font(bold=True)
             for r in rows:
-                kw, bs, br, bp, be, bsh, gs, gr, gp, ge, gsh, up = r
-                ws.append([kw, ST_LABEL.get(bs, bs), br or "", bp or "", be or "", bsh or "",
+                (kw, bs, br, bp, be, bsh,
+                 gs, gr, gp, ge, gsh,
+                 bms, bmr, bmp, bme, bmsh,
+                 gms, gmr, gmp, gme, gmsh, up) = r
+                ws.append([kw,
+                           ST_LABEL.get(bs, bs), br or "", bp or "", be or "", bsh or "",
                            ST_LABEL.get(gs, gs), gr or "", gp or "", ge or "", gsh or "",
-                           conclusion(bs, gs), up])
+                           ST_LABEL.get(bms, bms), bmr or "", bmp or "", bme or "", bmsh or "",
+                           ST_LABEL.get(gms, gms), gmr or "", gmp or "", gme or "", gmsh or "",
+                           conclusion(bs, gs, bms, gms), up])
+            # 截图列超链接（6,11,16,21）
             for idx, r in enumerate(rows, start=2):
-                for col in (6, 11):
+                for col in (6, 11, 16, 21):
                     shot = r[col - 2]
                     if shot and os.path.exists(shot):
                         ws.cell(row=idx, column=col).hyperlink = os.path.abspath(shot)
-            for i, w in enumerate([220, 60, 55, 55, 260, 160, 60, 55, 55, 260, 160, 90, 140], 1):
-                ws.column_dimensions[chr(64 + i)].width = w
+            widths = [220] + [60, 55, 55, 260, 160] * 4 + [90, 140]
+            for i, w in enumerate(widths, 1):
+                ws.column_dimensions[chr(64 + i) if i <= 26 else "A" + chr(64 + i - 26)].width = w
             ws2 = wb.create_sheet("汇总")
             total = len(rows)
             b_hit = sum(1 for r in rows if r[1] == "hit")
             g_hit = sum(1 for r in rows if r[6] == "hit")
-            both = sum(1 for r in rows if r[1] == "hit" and r[6] == "hit")
-            none = [r[0] for r in rows if r[1] == "none" and r[6] == "none"]
-            err = [r[0] for r in rows if r[1] == "error" or r[6] == "error"]
-            for row in [["指标", "数值"], ["关键词总数", total], ["百度官网标识命中", b_hit],
-                        ["必应域名命中", g_hit], ["双引擎均命中", both],
-                        ["双引擎均未命中（10页内未见）", len(none)],
+            bm_hit = sum(1 for r in rows if r[11] == "hit")
+            gm_hit = sum(1 for r in rows if r[16] == "hit")
+            any_hit = sum(1 for r in rows if r[1] == "hit" or r[6] == "hit" or r[11] == "hit" or r[16] == "hit")
+            none = [r[0] for r in rows if r[1] == "none" and r[6] == "none" and r[11] == "none" and r[16] == "none"]
+            err = [r[0] for r in rows if "error" in (r[1], r[6], r[11], r[16])]
+            for row in [["指标", "数值"], ["关键词总数", total], ["百度PC官网标识命中", b_hit],
+                        ["必应PC域名命中", g_hit], ["百度移动官网标识命中", bm_hit],
+                        ["必应移动域名命中", gm_hit], ["四引擎任一命中", any_hit],
+                        ["四引擎均未命中（10页内未见）", len(none)],
                         ["含错误（验证码跳过等）", len(err)], [],
-                        ["双引擎均未命中关键词", "、".join(none) if none else "无"],
+                        ["四引擎均未命中关键词", "、".join(none) if none else "无"],
                         ["含错误关键词", "、".join(err) if err else "无"]]:
                 ws2.append(row)
             for c in ws2[1]:
@@ -348,7 +439,10 @@ class Handler(BaseHTTPRequestHandler):
             body = buf.getvalue()
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            self.send_header("Content-Disposition", "attachment; filename=官网检索结果.xlsx")
+            from urllib.parse import quote as _quote
+            fn = _quote("官网检索结果.xlsx")
+            self.send_header("Content-Disposition",
+                             f"attachment; filename=result.xlsx; filename*=UTF-8''{fn}")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -357,11 +451,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"导出失败: {e}"}, 500)
 
     def _serve_shot(self, name):
+        import glob as _glob
         name = os.path.basename(unquote(name))
-        path = os.path.join(config.SCREENSHOT_DIR, name)
-        if not os.path.exists(path):
+        hits = _glob.glob(os.path.join(config.SCREENSHOT_DIR, "**", name), recursive=True)
+        if not hits or not os.path.isfile(hits[0]):
             return self._send_json({"error": "not found"}, 404)
-        with open(path, "rb") as f:
+        with open(hits[0], "rb") as f:
             body = f.read()
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
@@ -451,19 +546,31 @@ input[type=file]{display:none;}
     <button id="btnQuit" class="danger">退出服务</button>
   </div>
 
+  <div class="engbar" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-bottom:10px;font-size:13px;color:var(--sub);">
+    <span>本次导入查的平台：</span>
+    <label><input type="checkbox" id="chkBaidu" checked> 百度PC</label>
+    <label><input type="checkbox" id="chkBing" checked> 必应PC</label>
+    <label><input type="checkbox" id="chkBm" checked> 百度移动</label>
+    <label><input type="checkbox" id="chkGm" checked> 必应移动</label>
+    <span style="color:var(--gray);">（勾选决定新导入关键词查哪些平台；表格里单个平台出错可点 ↻ 单独补跑）</span>
+  </div>
+
   <div class="statbar">
     <span>进度 <b id="stProg">0 / 0</b></span>
-    <span>百度命中 <b id="stBd">0</b></span>
-    <span>必应命中 <b id="stBg">0</b></span>
+    <span>百度PC <b id="stBd">0</b></span>
+    <span>必应PC <b id="stBg">0</b></span>
+    <span>百度移动 <b id="stBm">0</b></span>
+    <span>必应移动 <b id="stGm">0</b></span>
     <span>状态 <b id="stCur" class="cur">就绪</b></span>
   </div>
 
   <div class="panel" style="overflow:auto;max-height:52vh;">
     <table id="tbl">
       <thead><tr>
-        <th data-k="kw">关键词</th><th data-k="bd">百度</th><th data-k="bd_rank">排名</th><th data-k="bd_page">页码</th>
-        <th data-k="bg">必应</th><th data-k="bg_rank">排名</th><th data-k="bg_page">页码</th>
-        <th data-k="concl">结论</th><th>百度截图</th><th>必应截图</th>
+        <th data-k="kw">关键词</th>
+        <th data-k="bd">百度PC</th><th data-k="bg">必应PC</th>
+        <th data-k="bm">百度移动</th><th data-k="gm">必应移动</th>
+        <th data-k="concl">结论</th><th>PC截图</th><th>移动截图</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
     </table>
@@ -511,12 +618,16 @@ input[type=file]{display:none;}
     });
     for(var i=0;i<arr.length;i++){
       var t=arr[i];
+      function cell(st,rank,page,eng,kw){return "<span class='tag "+tagCls(st)+"'>"+esc(st)+"</span>"+(rank?" <span style='color:var(--sub);font-size:12px'>#"+esc(rank)+" P"+esc(page)+"</span>":"")+" <a href='javascript:void(0)' onclick='retryEng("+JSON.stringify(kw)+","+JSON.stringify(eng)+")' title='单独重跑该平台' style='color:var(--accent);text-decoration:none;font-size:12px;'>↻</a>";}
+      function shotLink(p){return p?"<a class='shot' href='/shots/"+encodeURIComponent(p.split(/[\\\\\\/]/).pop())+"' target='_blank'>查看</a>":"";}
       h+="<tr><td class='kw' title='"+esc(t.kw)+"'>"+esc(t.kw)+"</td>"
-        +"<td><span class='tag "+tagCls(t.bd)+"'>"+esc(t.bd)+"</span></td><td>"+esc(t.bd_rank)+"</td><td>"+esc(t.bd_page)+"</td>"
-        +"<td><span class='tag "+tagCls(t.bg)+"'>"+esc(t.bg)+"</span></td><td>"+esc(t.bg_rank)+"</td><td>"+esc(t.bg_page)+"</td>"
+        +"<td>"+cell(t.bd,t.bd_rank,t.bd_page,"baidu",t.kw)+"</td>"
+        +"<td>"+cell(t.bg,t.bg_rank,t.bg_page,"bing",t.kw)+"</td>"
+        +"<td>"+cell(t.bm,t.bm_rank,t.bm_page,"baidu_m",t.kw)+"</td>"
+        +"<td>"+cell(t.gm,t.gm_rank,t.gm_page,"bing_m",t.kw)+"</td>"
         +"<td>"+esc(t.concl)+"</td>"
-        +"<td>"+(t.shot_bd?"<a class='shot' href='/shots/"+encodeURIComponent(t.shot_bd.split(/[\\\\\\/]/).pop())+"' target='_blank'>查看</a>":"")+"</td>"
-        +"<td>"+(t.shot_bg?"<a class='shot' href='/shots/"+encodeURIComponent(t.shot_bg.split(/[\\\\\\/]/).pop())+"' target='_blank'>查看</a>":"")+"</td></tr>";
+        +"<td>"+shotLink(t.shot_bd)+" "+shotLink(t.shot_bg)+"</td>"
+        +"<td>"+shotLink(t.shot_bm)+" "+shotLink(t.shot_gm)+"</td></tr>";
     }
     by("tbody").innerHTML=h;
   }
@@ -524,9 +635,11 @@ input[type=file]{display:none;}
     fetch("/api/state").then(function(r){return r.json();}).then(function(s){
       var sig=JSON.stringify(s.tasks);
       if(sig!==lastTasks){lastTasks=sig;tbl=s.tasks;render();}
-      by("stProg").textContent=(s.total-(s.tasks.filter(function(t){return t.bd!=="等待"&&t.bg!=="等待";}).length))+" / "+s.total;
+      by("stProg").textContent=(s.total-(s.tasks.filter(function(t){return t.bd!=="等待"&&t.bg!=="等待"&&t.bm!=="等待"&&t.gm!=="等待";}).length))+" / "+s.total;
       by("stBd").textContent=s.hits[0];
       by("stBg").textContent=s.hits[1];
+      by("stBm").textContent=s.hits[2];
+      by("stGm").textContent=s.hits[3];
       var cur=by("stCur");
       if(s.captcha){cur.textContent="⚠ "+s.captcha[0]+" 要求人机验证：请在浏览器窗口完成滑块，自动继续";cur.className="cap";}
       else if(s.current){cur.textContent="处理中: "+s.current[0]+"（"+s.current[1]+"）";cur.className="cur";}
@@ -551,6 +664,18 @@ input[type=file]{display:none;}
     }).catch(function(){}).then(function(){setTimeout(poll,500);});
   }
 
+  function selEngines(){
+    var e=[];
+    if(by("chkBaidu").checked)e.push("baidu");
+    if(by("chkBing").checked)e.push("bing");
+    if(by("chkBm").checked)e.push("baidu_m");
+    if(by("chkGm").checked)e.push("bing_m");
+    return e;
+  }
+  function retryEng(kw,eng){
+    api("/api/retry","POST",{keyword:kw,engine:eng}).then(function(r){if(r.error)alert(r.error);});
+  }
+  window.retryEng=retryEng;
   btn.start.onclick=function(){api("/api/start","POST").then(function(r){if(r.error)alert(r.error);});};
   btn.pause.onclick=function(){api("/api/pause","POST");};
   btn.skip.onclick=function(){api("/api/skip","POST");};
@@ -577,7 +702,7 @@ input[type=file]{display:none;}
         alert("Excel 请先转成 txt（每行一个关键词）再导入，或直接用粘贴。");
         return;
       }
-      api("/api/import","POST",{keywords:kws}).then(function(r){if(r.error)alert(r.error);});
+      api("/api/import","POST",{keywords:kws,engines:selEngines()}).then(function(r){if(r.error)alert(r.error);});
     };
     rd.readAsText(f,"utf-8");
     this.value="";
@@ -588,7 +713,7 @@ input[type=file]{display:none;}
     var kws=by("pasteBox").value.split(/\r?\n/).map(function(s){return s.trim();}).filter(Boolean);
     by("pasteBox").value="";
     by("modal").classList.remove("show");
-    api("/api/import","POST",{keywords:kws}).then(function(r){if(r.error)alert(r.error);});
+    api("/api/import","POST",{keywords:kws,engines:selEngines()}).then(function(r){if(r.error)alert(r.error);});
   };
 
   document.querySelectorAll("thead th[data-k]").forEach(function(th){
