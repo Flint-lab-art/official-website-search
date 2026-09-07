@@ -62,6 +62,7 @@ bash scripts/start.sh
 server.py          Web 面板（http.server 纯标准库）：API + 前端页面 + Worker 调度
 scripts/           start_panel.bat（Windows 启动器）+ install.sh/start.sh（Linux/macOS）
 main.py            CLI 入口（备用，与面板同一套采集核心）
+healthcheck.py     健康检查：真实浏览器验证解析/判定逻辑仍有效（DOM 未改版）
 core/config.py     目标域名、官网标识、页数、路径、浏览器参数
 core/db.py         SQLite 任务表（含 engines 列）+ 断点续跑 + 单平台重跑
 core/engine.py     Playwright 实例单例 + 浏览器会话（PC/移动）+ 验证码检测/等待
@@ -92,6 +93,20 @@ dev/               开发采样/测试脚本（git 忽略）
 - 必应显示「受限」= 该词触发必应合规过滤（部分搜索结果未予显示），页面无自然结果可判定——不是未命中，可换时间/网络重跑或人工核对
 - 截图目录：桌面 `Elo官网检索截图/`（按 `百度/PC`、`百度/MOB`、`必应/PC`、`必应/MOB` 分文件夹）
 - 结果表 `tasks` 字段：`baidu_*` / `bing_*` / `baidu_m_*` / `bing_m_*`（status/rank/page/evidence/shot 截图路径）+ `engines`（该词待跑平台）
+
+## 健康检查
+
+搜索引擎改版可能导致选择器失效，若不察觉会把「解析器坏了」误判成「官网没上榜」。定期跑一次健康检查，用真实浏览器验证解析逻辑仍有效：
+
+```bash
+python healthcheck.py                     # 默认检查 百度PC + 必应PC
+python healthcheck.py --platforms all     # 全部 4 平台
+python healthcheck.py --captcha-wait 180  # 验证码人工等待秒数（默认 120）
+```
+
+- 样本词：2 个命中词 + 1 个负样本，只查第 1 页
+- 结论：`PASS` 解析正常（顺带显示是否命中官网）｜`WARN` 必应受限页（平台过滤，受限检测本身正常）｜`FAIL` 第 1 页解析出 0 条——疑似改版，需人工核查 `core/` 下的解析器
+- 退出码：0 = 无 FAIL；1 = 存在 FAIL（可用于定时任务/CI 判断）
 
 ## 环境
 
