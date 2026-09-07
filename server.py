@@ -29,6 +29,8 @@ from core.baidu_m import run_baidu_m
 from core.bing_m import run_bing_m
 
 PORT = 27531
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FAVICON = os.path.join(BASE_DIR, "favicon.png")
 ST_LABEL = {"pending": "等待", "hit": "命中", "none": "未命中", "error": "错误", "restricted": "受限"}
 ENG_LABEL = {"baidu": "百度PC", "bing": "必应PC", "baidu_m": "百度移动", "bing_m": "必应移动"}
 
@@ -306,6 +308,10 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/":
             return self._send_html(PAGE)
+        if path == "/favicon.ico":
+            return self._serve_favicon()
+        if path == "/favicon.png":
+            return self._serve_favicon()
         if path == "/api/state":
             return self._send_json(_api_state())
         if path == "/api/export":
@@ -567,6 +573,18 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"error": f"导出失败: {e}"}, 500)
 
+    def _serve_favicon(self):
+        if not os.path.isfile(FAVICON):
+            return self._send_json({"error": "not found"}, 404)
+        with open(FAVICON, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _serve_shot(self, name):
         import glob as _glob
         name = os.path.basename(unquote(name))
@@ -588,6 +606,7 @@ PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.png" type="image/png">
 <title>官网检索器 · Elo / elotouch.com.cn</title>
 <style>
 :root{
