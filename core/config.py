@@ -43,3 +43,4 @@ ST_PENDING = "pending"
 ST_HIT = "hit"          # 命中
 ST_NONE = "none"        # 10 页未命中
 ST_ERROR = "error"
+ST_RESTRICTED = "restricted"  # 搜索引擎合规过滤/受限页，无法判定

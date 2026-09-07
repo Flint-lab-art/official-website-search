@@ -29,8 +29,28 @@ from core.baidu_m import run_baidu_m
 from core.bing_m import run_bing_m
 
 PORT = 27531
-ST_LABEL = {"pending": "等待", "hit": "命中", "none": "未命中", "error": "错误"}
+ST_LABEL = {"pending": "等待", "hit": "命中", "none": "未命中", "error": "错误", "restricted": "受限"}
 ENG_LABEL = {"baidu": "百度PC", "bing": "必应PC", "baidu_m": "百度移动", "bing_m": "必应移动"}
+
+# 导出可选列：(id, 表头, 行索引, 类型, 列宽)
+# 类型: raw=直取, st=状态转标签, shot=截图(文件名+超链接), concl=结论, kw=关键词
+EXPORT_COLS = [
+    ("kw", "关键词", 0, "kw", 30),
+    ("bd", "百度PC状态", 1, "st", 12), ("bd_rank", "百度PC排名", 2, "raw", 10),
+    ("bd_page", "百度PC页码", 3, "raw", 10), ("bd_ev", "百度PC依据", 4, "raw", 80),
+    ("bd_shot", "百度PC截图", 5, "shot", 60),
+    ("bg", "必应PC状态", 6, "st", 12), ("bg_rank", "必应PC排名", 7, "raw", 10),
+    ("bg_page", "必应PC页码", 8, "raw", 10), ("bg_ev", "必应PC依据", 9, "raw", 80),
+    ("bg_shot", "必应PC截图", 10, "shot", 60),
+    ("bm", "百度移动状态", 11, "st", 12), ("bm_rank", "百度移动排名", 12, "raw", 10),
+    ("bm_page", "百度移动页码", 13, "raw", 10), ("bm_ev", "百度移动依据", 14, "raw", 80),
+    ("bm_shot", "百度移动截图", 15, "shot", 60),
+    ("gm", "必应移动状态", 16, "st", 12), ("gm_rank", "必应移动排名", 17, "raw", 10),
+    ("gm_page", "必应移动页码", 18, "raw", 10), ("gm_ev", "必应移动依据", 19, "raw", 80),
+    ("gm_shot", "必应移动截图", 20, "shot", 60),
+    ("concl", "结论", None, "concl", 16),
+    ("upd", "更新时间", 21, "raw", 45),
+]
 
 
 def conclusion(*st):
@@ -289,7 +309,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/state":
             return self._send_json(_api_state())
         if path == "/api/export":
-            return self._export_xlsx()
+            qs = urlparse(self.path).query
+            cols = parse_qs(qs).get("cols", [""])[0] if qs else ""
+            return self._export_xlsx(cols or None)
         if path.startswith("/shots/"):
             return self._serve_shot(path[len("/shots/"):])
         self._send_json({"error": "not found"}, 404)
@@ -367,10 +389,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"ok": True})
         self._send_json({"error": "not found"}, 404)
 
-    def _export_xlsx(self):
+    def _export_xlsx(self, cols_ids=None):
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font
+            # 列选择：None/空 = 全选
+            if not cols_ids:
+                selected = EXPORT_COLS
+            else:
+                want = {c.strip() for c in cols_ids.split(",") if c.strip()}
+                selected = [c for c in EXPORT_COLS if c[0] in want]
             conn = db.init_db(config.DB_PATH)
             rows = conn.execute(
                 "SELECT keyword, "
@@ -381,38 +409,91 @@ class Handler(BaseHTTPRequestHandler):
                 "updated_at FROM tasks ORDER BY id").fetchall()
             conn.close()
             wb = Workbook()
-            ws = wb.active
-            ws.title = "明细"
-            head = ["关键词",
-                    "百度PC", "百度PC排名", "百度PC页码", "百度PC依据", "百度PC截图",
-                    "必应PC", "必应PC排名", "必应PC页码", "必应PC依据", "必应PC截图",
-                    "百度移动", "百度移动排名", "百度移动页码", "百度移动依据", "百度移动截图",
-                    "必应移动", "必应移动排名", "必应移动页码", "必应移动依据", "必应移动截图",
-                    "结论", "更新时间"]
-            ws.append(head)
-            for c in ws[1]:
-                c.font = Font(bold=True)
-            for r in rows:
-                (kw, bs, br, bp, be, bsh,
-                 gs, gr, gp, ge, gsh,
-                 bms, bmr, bmp, bme, bmsh,
-                 gms, gmr, gmp, gme, gmsh, up) = r
-                ws.append([kw,
-                           ST_LABEL.get(bs, bs), br or "", bp or "", be or "", bsh or "",
-                           ST_LABEL.get(gs, gs), gr or "", gp or "", ge or "", gsh or "",
-                           ST_LABEL.get(bms, bms), bmr or "", bmp or "", bme or "", bmsh or "",
-                           ST_LABEL.get(gms, gms), gmr or "", gmp or "", gme or "", gmsh or "",
-                           conclusion(bs, gs, bms, gms), up])
-            # 截图列超链接（6,11,16,21）
-            for idx, r in enumerate(rows, start=2):
-                for col in (6, 11, 16, 21):
-                    shot = r[col - 2]
-                    if shot and os.path.exists(shot):
-                        ws.cell(row=idx, column=col).hyperlink = os.path.abspath(shot)
-            widths = [220] + [60, 55, 55, 260, 160] * 4 + [90, 140]
-            for i, w in enumerate(widths, 1):
-                ws.column_dimensions[chr(64 + i) if i <= 26 else "A" + chr(64 + i - 26)].width = w
+            wb.remove(wb.active)
+
+            def _engine_of(cid):
+                for pre, name in (("bd", "百度PC"), ("bg", "必应PC"),
+                                  ("bm", "百度移动"), ("gm", "必应移动")):
+                    if cid == pre or cid.startswith(pre + "_"):
+                        return name
+                return None
+
+            def _val(r, col):
+                _id, _label, idx, typ, _w = col
+                if typ == "kw":
+                    return r[0]
+                if typ == "st":
+                    return ST_LABEL.get(r[idx], r[idx]) or ""
+                if typ == "concl":
+                    return conclusion(r[1], r[6], r[11], r[16])
+                if typ == "shot":
+                    return os.path.basename(r[idx] or "") or ""
+                return r[idx] or ""
+
+            # 按平台分组生成 sheet
+            groups = {}
+            for c in selected:
+                eng = _engine_of(c[0])
+                if eng:
+                    groups.setdefault(eng, []).append(c)
+            from openpyxl.styles import PatternFill, Font as XFont, Border, Side, Alignment
+            HEAD_FILL = PatternFill("solid", fgColor="4F6EF2")
+            HEAD_FONT = XFont(color="FFFFFF", bold=True, size=11)
+            THIN = Side(style="thin", color="D9D9D9")
+            BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+            ST_FILL = {"hit": ("C6EFCE", "006100"), "none": ("F2F2F2", "808080"),
+                       "error": ("FFC7CE", "9C0006"), "restricted": ("FFEB9C", "9C6500")}
+            REV_LABEL = {v: k for k, v in ST_LABEL.items()}
+
+            def _style_head(wsx, ncol):
+                for i in range(1, ncol + 1):
+                    c = wsx.cell(row=1, column=i)
+                    c.fill = HEAD_FILL
+                    c.font = HEAD_FONT
+                    c.alignment = Alignment(horizontal="center", vertical="center")
+                    c.border = BORDER
+                wsx.row_dimensions[1].height = 20
+
+            def _style_data(wsx, nrow, ncol, st_cols=()):
+                for r_ in range(2, nrow + 1):
+                    for i in range(1, ncol + 1):
+                        c = wsx.cell(row=r_, column=i)
+                        c.border = BORDER
+                        if i == 1:
+                            c.alignment = Alignment(vertical="center")
+                        else:
+                            c.alignment = Alignment(horizontal="center", vertical="center")
+                    for i in st_cols:
+                        cell = wsx.cell(row=r_, column=i)
+                        st = REV_LABEL.get(cell.value, "")
+                        if st in ST_FILL:
+                            bg, fg = ST_FILL[st]
+                            if bg:
+                                cell.fill = PatternFill("solid", fgColor=bg)
+                            cell.font = XFont(color=fg, bold=True)
+
+            for eng, cols in groups.items():
+                ws = wb.create_sheet(eng)
+                head = ["关键词"] + [c[1] for c in cols]
+                ws.append(head)
+                for r in rows:
+                    ws.append([r[0]] + [_val(r, c) for c in cols])
+                shot_cols = [i + 2 for i, c in enumerate(cols) if c[3] == "shot"]
+                for idx, r in enumerate(rows, start=2):
+                    for col in shot_cols:
+                        shot = r[cols[col - 2][2]]
+                        if shot and os.path.exists(shot):
+                            ws.cell(row=idx, column=col).hyperlink = os.path.abspath(shot)
+                st_cols = [i + 2 for i, c in enumerate(cols) if c[3] == "st"]
+                _style_head(ws, len(head))
+                _style_data(ws, ws.max_row, len(head), st_cols)
+                ws.freeze_panes = "A2"
+                ws.auto_filter.ref = f"A1:{chr(64 + len(head)) if len(head) <= 26 else 'A' + chr(64 + len(head) - 26)}{ws.max_row}"
+
+            # 汇总 sheet：勾选的结论/更新时间 + 固定统计
             ws2 = wb.create_sheet("汇总")
+            extra = [c for c in selected if c[0] in ("concl", "upd")]
+            head2 = [c[1] for c in extra] + (["关键词"] if not extra else [])
             total = len(rows)
             b_hit = sum(1 for r in rows if r[1] == "hit")
             g_hit = sum(1 for r in rows if r[6] == "hit")
@@ -421,18 +502,54 @@ class Handler(BaseHTTPRequestHandler):
             any_hit = sum(1 for r in rows if r[1] == "hit" or r[6] == "hit" or r[11] == "hit" or r[16] == "hit")
             none = [r[0] for r in rows if r[1] == "none" and r[6] == "none" and r[11] == "none" and r[16] == "none"]
             err = [r[0] for r in rows if "error" in (r[1], r[6], r[11], r[16])]
-            for row in [["指标", "数值"], ["关键词总数", total], ["百度PC官网标识命中", b_hit],
-                        ["必应PC域名命中", g_hit], ["百度移动官网标识命中", bm_hit],
-                        ["必应移动域名命中", gm_hit], ["四引擎任一命中", any_hit],
-                        ["四引擎均未命中（10页内未见）", len(none)],
-                        ["含错误（验证码跳过等）", len(err)], [],
-                        ["四引擎均未命中关键词", "、".join(none) if none else "无"],
-                        ["含错误关键词", "、".join(err) if err else "无"]]:
+            if extra:
+                ws2.append(head2)
+                for c in ws2[1]:
+                    c.font = Font(bold=True)
+                for r in rows:
+                    ws2.append([_val(r, c) for c in extra])
+            stat = [["指标", "数值"], ["关键词总数", total], ["百度PC官网标识命中", b_hit],
+                    ["必应PC域名命中", g_hit], ["百度移动官网标识命中", bm_hit],
+                    ["必应移动域名命中", gm_hit], ["四引擎任一命中", any_hit],
+                    ["四引擎均未命中（10页内未见）", len(none)],
+                    ["含错误（验证码跳过等）", len(err)], [],
+                    ["四引擎均未命中关键词", "、".join(none) if none else "无"],
+                    ["含错误关键词", "、".join(err) if err else "无"]]
+            for row in stat:
                 ws2.append(row)
-            for c in ws2[1]:
-                c.font = Font(bold=True)
-            ws2.column_dimensions["A"].width = 26
-            ws2.column_dimensions["B"].width = 80
+            # 汇总样式：表头深底白字，统计区加粗+边框
+            head_row = 1 if extra else None
+            if extra:
+                _style_head(ws2, len(head2))
+                for r_ in range(2, 2 + len(rows)):
+                    for i in range(1, len(head2) + 1):
+                        c = ws2.cell(row=r_, column=i)
+                        c.border = BORDER
+                        c.alignment = Alignment(horizontal="center", vertical="center")
+                start = 2 + len(rows)
+            else:
+                start = 1
+            for r_ in range(start, ws2.max_row + 1):
+                for i in range(1, 3):
+                    c = ws2.cell(row=r_, column=i)
+                    c.border = BORDER
+                    c.alignment = Alignment(vertical="center", horizontal="left" if i == 1 else "left")
+                ws2.cell(row=r_, column=1).font = XFont(bold=True)
+            # 全部 sheet 按内容自动列宽（中文 2 字符，英文 1，上限防超宽）
+            for wsx in wb.worksheets:
+                cap = 80 if wsx.title == "汇总" else 60
+                for col_cells in wsx.columns:
+                    mx = 0
+                    letter = col_cells[0].column_letter
+                    for cell in col_cells:
+                        if cell.value is None:
+                            continue
+                        ln = sum(2 if ord(ch) > 127 else 1 for ch in str(cell.value))
+                        mx = max(mx, ln)
+                    wsx.column_dimensions[letter].width = min(mx + 2, cap)
+            # 汇总 sheet 移到第一个
+            if "汇总" in wb.sheetnames and wb.sheetnames[0] != "汇总":
+                wb.move_sheet("汇总", offset=-len(wb.sheetnames) + 1)
             import io as _io
             buf = _io.BytesIO()
             wb.save(buf)
@@ -591,6 +708,19 @@ input[type=file]{display:none;}
   </div>
 </div>
 
+<!-- 导出列选择弹窗 -->
+<div class="modal" id="exportModal">
+  <div class="mbox" style="max-width:680px;">
+    <h3>选择导出列</h3>
+    <div id="exportCols" style="max-height:52vh;overflow-y:auto;font-size:13px;color:var(--sub);"></div>
+    <div class="mrow">
+      <button id="expAll">全选</button><button id="expNone">全不选</button>
+      <span class="spacer"></span>
+      <button id="exportCancel">取消</button><button id="exportOk" class="primary">导出</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
   var sortKey="id", sortDir=-1, lastTasks="", logSeen=0, lastLogs=0;
@@ -680,7 +810,54 @@ input[type=file]{display:none;}
   btn.pause.onclick=function(){api("/api/pause","POST");};
   btn.skip.onclick=function(){api("/api/skip","POST");};
   btn.stop.onclick=function(){api("/api/stop","POST");};
-  by("btnExport").onclick=function(){location.href="/api/export";};
+  by("btnExport").onclick=function(){renderExportCols();by("exportModal").classList.add("show");};
+  by("exportCancel").onclick=function(){by("exportModal").classList.remove("show");};
+  by("expAll").onclick=function(){document.querySelectorAll("#exportCols input").forEach(function(i){i.checked=true;});};
+  by("expNone").onclick=function(){document.querySelectorAll("#exportCols input").forEach(function(i){i.checked=false;});};
+  by("exportOk").onclick=function(){
+    var types=[];
+    document.querySelectorAll("#exportCols input:checked").forEach(function(i){types.push(i.value);});
+    if(!types.length){alert("至少选择一项");return;}
+    var map={"kw":["kw"],"st":["bd","bg","bm","gm"],"rank":["bd_rank","bg_rank","bm_rank","gm_rank"],
+             "page":["bd_page","bg_page","bm_page","gm_page"],"ev":["bd_ev","bg_ev","bm_ev","gm_ev"],
+             "shot":["bd_shot","bg_shot","bm_shot","gm_shot"],"concl":["concl"],"upd":["upd"]};
+    var ids=[];
+    types.forEach(function(t){ids=ids.concat(map[t]||[]);});
+    localStorage.setItem("expCols", types.join(","));
+    by("exportModal").classList.remove("show");
+    location.href="/api/export?cols="+encodeURIComponent(ids.join(","));
+  };
+  function renderExportCols(){
+    var types=[
+      ["关键词",[["kw","关键词"]]],
+      ["导出字段（勾选后四个平台都包含）",[["st","状态"],["rank","排名"],["page","页码"],["ev","依据"],["shot","截图"]]],
+      ["其他",[["concl","结论"],["upd","更新时间"]]]
+    ];
+    var saved=(localStorage.getItem("expCols")||"").split(",").filter(Boolean);
+    // 兼容旧格式：把旧的列 id（如 bd_rank/bg）映射成字段类型
+    function oldToType(id){
+      if(id==="kw"||id==="concl"||id==="upd")return id;
+      if(id.indexOf("_rank")>=0)return "rank";
+      if(id.indexOf("_page")>=0)return "page";
+      if(id.indexOf("_ev")>=0)return "ev";
+      if(id.indexOf("_shot")>=0)return "shot";
+      return "st";
+    }
+    var savedT={};
+    saved.forEach(function(id){savedT[oldToType(id)]=1;});
+    delete savedT["ev"];  // 依据默认不要
+    var defaults={kw:1,st:1,rank:1,page:1,shot:1,concl:1,upd:1};
+    var h="";
+    types.forEach(function(g){
+      h+="<div style='margin:8px 0 4px;font-weight:600;color:var(--text);'>"+g[0]+"</div><div style='display:flex;flex-wrap:wrap;gap:4px 14px;'>";
+      g[1].forEach(function(c){
+        var on=(saved.length? savedT[c[0]] : defaults[c[0]])===1;
+        h+="<label style='display:flex;align-items:center;gap:4px;'><input type='checkbox' value='"+c[0]+"'"+(on?" checked":"")+"> "+c[1]+"</label>";
+      });
+      h+="</div>";
+    });
+    by("exportCols").innerHTML=h;
+  }
   by("btnClear").onclick=function(){
     if(confirm("清空全部任务数据？（关键词、结果、进度都会删除）"))api("/api/clear","POST");
   };

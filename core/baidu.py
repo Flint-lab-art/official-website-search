@@ -4,7 +4,7 @@ import random
 from urllib.parse import quote
 
 from . import config
-from .engine import is_captcha, wait_for_captcha
+from .engine import is_captcha, wait_for_captcha, scroll_trigger
 
 SEARCH_URL = "https://www.baidu.com/s?wd={}"
 
@@ -113,6 +113,7 @@ def _screenshot(page, keyword, pn, engine, shot_dir):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"{safe}_{engine}_p{pn}.png")
     try:
+        scroll_trigger(page)
         page.screenshot(path=path, full_page=True)
         return path
     except Exception:

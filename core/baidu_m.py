@@ -5,7 +5,7 @@
 """
 from urllib.parse import quote
 from core import config
-from core.engine import is_captcha, wait_for_captcha
+from core.engine import is_captcha, wait_for_captcha, scroll_trigger
 
 SEARCH_URL = "https://m.baidu.com/s?word={kw}"
 
@@ -126,6 +126,7 @@ def _screenshot(page, keyword, pn, engine, shot_dir):
     os.makedirs(folder, exist_ok=True)
     shot = os.path.join(folder, f"{safe}_{engine}_p{pn}.png")
     try:
+        scroll_trigger(page)
         page.screenshot(path=shot, full_page=True)
         return shot
     except Exception:

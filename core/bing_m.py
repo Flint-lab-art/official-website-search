@@ -6,6 +6,7 @@ P1 用「首页→输入→回车」模拟真人（消除直达 URL 搜索偏差
 """
 from urllib.parse import quote
 from core import config
+from core.engine import scroll_trigger
 
 HOME_URL = "https://www.bing.com/?mkt=zh-CN"
 SEARCH_URL = "https://cn.bing.com/search?q={kw}&first={first}&mkt=zh-CN"
@@ -19,6 +20,7 @@ def _screenshot(page, keyword, pn, engine, shot_dir):
     os.makedirs(folder, exist_ok=True)
     shot = os.path.join(folder, f"{safe}_{engine}_p{pn}.png")
     try:
+        scroll_trigger(page)
         page.screenshot(path=shot, full_page=True)
         return shot
     except Exception:
@@ -36,6 +38,19 @@ def _parse_page(page):
         cite = (cite_el.inner_text() or "").strip() if cite_el else ""
         results.append((len(results) + 1, cite))
     return results
+
+
+def _is_restricted(page):
+    """必应受限页检测：合规过滤（部分搜索结果未予显示）或知识卡空结果页"""
+    try:
+        body = page.locator("body").inner_text(timeout=5000) or ""
+    except Exception:
+        return False
+    if "部分搜索结果未予显示" in body or "未予显示" in body:
+        return True
+    if "深入了解" in body and page.locator("li.b_algo").count() == 0:
+        return True
+    return False
 
 
 def run_bing_m(session, keyword, shot_dir, page=None):
@@ -66,6 +81,9 @@ def run_bing_m(session, keyword, shot_dir, page=None):
                     evidence = f"自然第{rank}位｜cite:{cite[:40]}"
                     return {"status": config.ST_HIT, "rank": rank, "page": pn,
                             "evidence": evidence, "shot": shot}
+            if _is_restricted(page):
+                return {"status": config.ST_RESTRICTED,
+                        "evidence": f"第{pn}页：必应受限页（结果被过滤），无法判定"}
             if pn < config.MAX_PAGES:
                 session.random_delay()
         return {"status": config.ST_NONE, "evidence": f"前{config.MAX_PAGES}页未出现 {config.TARGET_DOMAIN}"}
