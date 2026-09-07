@@ -20,24 +20,39 @@
 
 ## 快速开始
 
+**Windows**
+
 ```powershell
-# 1. 创建虚拟环境并安装依赖
+# 1. 安装依赖（自动建 .venv + 装 playwright/openpyxl + Chromium）
+#    双击 scripts\install.bat，或命令行执行：
 py -3.13 -m venv .venv
 .\.venv\Scripts\python -m pip install playwright openpyxl
 .\.venv\Scripts\python -m playwright install chromium
 
-# 2. 启动面板（双击 start_panel.bat 或执行下面命令）
-Start-Process .\.venv\Scripts\pythonw.exe -ArgumentList "server.py","--no-browser"
-
+# 2. 启动面板（双击桌面「启动官网检索面板.bat」，或运行 scripts\start_panel.bat）
 # 3. 浏览器打开 http://127.0.0.1:27531
 #    导入关键词 → 勾选平台 → 开始
 ```
+
+**Linux / macOS**
+
+```bash
+# 1. 安装依赖（自动建 .venv + 装 playwright/openpyxl + Chromium）
+bash scripts/install.sh
+
+# 2. 启动面板（已在跑则直接开浏览器；否则后台启动并等待就绪）
+bash scripts/start.sh
+
+# 3. 浏览器打开 http://127.0.0.1:27531
+```
+
+> 脚本位于 `scripts/`：`install.bat` + `start_panel.bat`（Windows）、`install.sh` + `start.sh`（Linux/macOS 通用，macOS 用 `open`、Linux 用 `xdg-open` 开浏览器）。
 
 ## 架构
 
 ```
 server.py          Web 面板（http.server 纯标准库）：API + 前端页面 + Worker 调度
-start_panel.bat    桌面双击启动器（已在跑则只开页面）
+scripts/           start_panel.bat（Windows 启动器）+ install.sh/start.sh（Linux/macOS）
 main.py            CLI 入口（备用，与面板同一套采集核心）
 core/config.py     目标域名、官网标识、页数、路径、浏览器参数
 core/db.py         SQLite 任务表（含 engines 列）+ 断点续跑 + 单平台重跑

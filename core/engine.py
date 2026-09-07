@@ -5,9 +5,6 @@ from playwright.sync_api import sync_playwright
 
 from . import config
 
-# 引擎 → 面板显示名（用于截图页码水印）
-ENGINE_LABEL = {"baidu": "百度PC", "baidu_m": "百度移动", "bing": "必应PC", "bing_m": "必应移动"}
-
 
 def scroll_trigger(page):
     """截图前滚动到底部再回顶，触发底部元素（页码条等）懒加载渲染"""
@@ -16,64 +13,6 @@ def scroll_trigger(page):
         page.wait_for_timeout(600)
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(400)
-    except Exception:
-        pass
-
-
-def stamp_page_mark(path, engine, pn):
-    """在截图底部叠加仿原生页码条（引擎名 + 1/2/3/… 当前页高亮），
-    保证受限页等无原生页码条的截图也能看出命中页码"""
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except Exception:
-        return
-    try:
-        img = Image.open(path).convert("RGB")
-        w, h = img.size
-        fs = max(18, int(w / 45))
-        font_path = r"C:\Windows\Fonts\msyh.ttc"
-        try:
-            font = ImageFont.truetype(font_path, fs)
-        except Exception:
-            font = ImageFont.load_default()
-        label = f"{ENGINE_LABEL.get(engine, engine)}"
-        d = ImageDraw.Draw(img)
-        pad = int(fs * 0.7)
-        # 页码块：1..min(5, pn)，当前页高亮
-        nums = list(range(1, min(5, pn) + 1))
-        lw = d.textlength(label, font=font)
-        cell_w = int(fs * 1.9)
-        gap = int(fs * 0.35)
-        bar_w = pad * 2 + lw + gap + len(nums) * cell_w + gap * max(0, len(nums) - 1) + cell_w
-        bar_h = int(fs * 2.1)
-        x0 = (w - bar_w) / 2
-        y0 = h - bar_h - 16
-        # 半透明底条
-        ov = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        od = ImageDraw.Draw(ov)
-        od.rounded_rectangle([x0, y0, x0 + bar_w, y0 + bar_h], radius=12, fill=(0, 0, 0, 165))
-        img = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
-        d = ImageDraw.Draw(img)
-        # 引擎名
-        d.text((x0 + pad, y0 + (bar_h - fs) / 2 - 2), label, fill=(255, 255, 255), font=font)
-        # 页码块
-        cx = x0 + pad * 2 + lw + gap
-        cy = y0 + (bar_h - cell_w) / 2
-        for n in nums:
-            cur = (n == pn)
-            d.rounded_rectangle([cx, cy, cx + cell_w, cy + cell_w], radius=6,
-                                fill=(78, 110, 242, 255) if cur else (255, 255, 255, 40),
-                                outline=(255, 255, 255, 200) if cur else None, width=1)
-            tw = d.textlength(str(n), font=font)
-            d.text((cx + (cell_w - tw) / 2, cy + (cell_w - fs) / 2 - 1), str(n),
-                   fill=(255, 255, 255) if cur else (230, 232, 235), font=font)
-            cx += cell_w + gap
-        # 右箭头
-        d.rounded_rectangle([cx, cy, cx + cell_w, cy + cell_w], radius=6,
-                            fill=(255, 255, 255, 40), outline=(255, 255, 255, 200), width=1)
-        d.text((cx + (cell_w - fs) / 2, cy + (cell_w - fs) / 2 - 2), ">",
-               fill=(230, 232, 235), font=font)
-        img.save(path, "PNG")
     except Exception:
         pass
 
