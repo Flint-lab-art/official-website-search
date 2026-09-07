@@ -66,6 +66,7 @@ server.py          Web 面板（http.server 纯标准库）：API + 前端页面
 scripts/           install.bat/install.sh（依赖安装）+ start.sh/start_panel.bat（启动）
 main.py            CLI 入口（备用，与面板同一套采集核心）
 healthcheck.py     健康检查：真实浏览器验证解析/判定逻辑仍有效（DOM 未改版）
+pick_p1_shots.py   挑取「第一页命中」截图：从 results.db 筛 page=1 且命中的记录，把截图归集到 `Elo官网检索截图/第一页命中/`（按平台分子文件夹）并生成清单 txt
 tests/             单元测试（pytest）：配置/判定/db
 requirements.txt   依赖清单（playwright / openpyxl / pytest）
 core/config.py     目标域名、官网标识、页数、路径、浏览器参数
@@ -97,6 +98,7 @@ dev/               开发采样/测试脚本（git 忽略）
 - 数据落库后再次运行自动续跑（只跑未完成的平台）；清空重跑在面板点「清空」
 - 必应显示「受限」= 该词触发必应合规过滤（部分搜索结果未予显示），页面无自然结果可判定——不是未命中，可换时间/网络重跑或人工核对
 - 截图目录：桌面 `Elo官网检索截图/`（按 `百度/PC`、`百度/MOB`、`必应/PC`、`必应/MOB` 分文件夹）
+- 客户要「第一页就命中」的证据时：跑完全量后执行 `python pick_p1_shots.py`，自动把第 1 页命中的截图归集到 `Elo官网检索截图/第一页命中/`（按平台分文件夹 + 清单 txt，可直接交付）
 - 结果表 `tasks` 字段：`baidu_*` / `bing_*` / `baidu_m_*` / `bing_m_*`（status/rank/page/evidence/shot 截图路径）+ `engines`（该词待跑平台）
 
 ## 健康检查
