@@ -15,9 +15,9 @@ if [ ! -d .venv ]; then
     "$PY" -m venv .venv
 fi
 
-echo "升级 pip 并安装依赖（playwright / openpyxl）..."
+echo "升级 pip 并安装依赖（见 requirements.txt）..."
 ./.venv/bin/python -m pip install --upgrade pip
-./.venv/bin/python -m pip install playwright openpyxl
+./.venv/bin/python -m pip install -r requirements.txt
 
 echo "安装 Chromium（Playwright）..."
 ./.venv/bin/python -m playwright install chromium

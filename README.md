@@ -31,10 +31,10 @@
 **Windows**
 
 ```powershell
-# 1. 安装依赖（自动建 .venv + 装 playwright/openpyxl + Chromium）
+# 1. 安装依赖（自动建 .venv + 按 requirements.txt 装包 + Chromium）
 #    双击 scripts\install.bat，或命令行执行：
 py -3.13 -m venv .venv
-.\.venv\Scripts\python -m pip install playwright openpyxl
+.\.venv\Scripts\python -m pip install -r requirements.txt
 .\.venv\Scripts\python -m playwright install chromium
 
 # 2. 启动面板（双击桌面「启动官网检索面板.bat」，或运行 scripts\start_panel.bat）
@@ -45,7 +45,7 @@ py -3.13 -m venv .venv
 **Linux / macOS**
 
 ```bash
-# 1. 安装依赖（自动建 .venv + 装 playwright/openpyxl + Chromium）
+# 1. 安装依赖（自动建 .venv + 按 requirements.txt 装包 + Chromium）
 bash scripts/install.sh
 
 # 2. 启动面板（已在跑则直接开浏览器；否则后台启动并等待就绪）
@@ -54,15 +54,19 @@ bash scripts/start.sh
 # 3. 浏览器打开 http://127.0.0.1:27531
 ```
 
+> 换新机器：只需装好 Python 3.10+，然后运行对应平台的 `scripts/install.*`，依赖自动装齐。
+
 > 脚本位于 `scripts/`：`install.bat` + `start_panel.bat`（Windows）、`install.sh` + `start.sh`（Linux/macOS 通用，macOS 用 `open`、Linux 用 `xdg-open` 开浏览器）。
 
 ## 架构
 
 ```
 server.py          Web 面板（http.server 纯标准库）：API + 前端页面 + Worker 调度
-scripts/           start_panel.bat（Windows 启动器）+ install.sh/start.sh（Linux/macOS）
+scripts/           install.bat/install.sh（依赖安装）+ start.sh/start_panel.bat（启动）
 main.py            CLI 入口（备用，与面板同一套采集核心）
 healthcheck.py     健康检查：真实浏览器验证解析/判定逻辑仍有效（DOM 未改版）
+tests/             单元测试（pytest）：配置/判定/db
+requirements.txt   依赖清单（playwright / openpyxl / pytest）
 core/config.py     目标域名、官网标识、页数、路径、浏览器参数
 core/db.py         SQLite 任务表（含 engines 列）+ 断点续跑 + 单平台重跑
 core/engine.py     Playwright 实例单例 + 浏览器会话（PC/移动）+ 验证码检测/等待
@@ -107,6 +111,15 @@ python healthcheck.py --captcha-wait 180  # 验证码人工等待秒数（默认
 - 样本词：2 个命中词 + 1 个负样本，只查第 1 页
 - 结论：`PASS` 解析正常（顺带显示是否命中官网）｜`WARN` 必应受限页（平台过滤，受限检测本身正常）｜`FAIL` 第 1 页解析出 0 条——疑似改版，需人工核查 `core/` 下的解析器
 - 退出码：0 = 无 FAIL；1 = 存在 FAIL（可用于定时任务/CI 判断）
+
+## 测试
+
+```bash
+.\.venv\Scripts\python -m pytest tests -v    # Windows
+./.venv/bin/python -m pytest tests -v        # Linux / macOS
+```
+
+覆盖：配置常量、百度 PC/移动官网标识判定、必应域名判定、db 任务表/断点续跑/单平台重跑。无浏览器依赖，秒级跑完。
 
 ## 环境
 
