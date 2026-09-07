@@ -5,6 +5,8 @@ import os
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ---- 目标 ----
+# 注意：以下为实际项目（Elo）的默认配置，供本项目本地使用。
+# fork 用于其他品牌时，请替换 TARGET_DOMAIN / BAIDU_OFFICIAL_MARKS（见 README「适配其他品牌」）。
 TARGET_DOMAIN = "elotouch.com.cn"
 # 百度「官网标识」：来源行/标题出现的官方字样
 BAIDU_OFFICIAL_MARKS = ["Elo®中国官网", "Elo®官方网站", "elotouch.com.cn"]

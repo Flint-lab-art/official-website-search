@@ -713,7 +713,7 @@ input[type=file]{display:none;}
 </head>
 <body>
 <div class="wrap">
-  <h1><span class="dot"></span>官网检索器 <span style="font-size:12px;color:var(--sub);font-weight:400;">Elo / elotouch.com.cn · 百度官网标识 + 必应域名 · 前10页</span></h1>
+  <h1><span class="dot"></span>官网检索器 <span style="font-size:12px;color:var(--sub);font-weight:400;">百度官网标识 + 必应域名 · 前10页</span></h1>
 
   <div class="toolbar">
     <button id="btnImportFile">导入文件</button>
