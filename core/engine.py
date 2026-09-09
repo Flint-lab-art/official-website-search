@@ -3,6 +3,7 @@
 import contextlib
 import os
 import random
+import shutil
 import time
 
 from playwright.sync_api import BrowserContext, sync_playwright
@@ -103,9 +104,25 @@ def stop_playwright():
         _PW = None
 
 
+def par_profile_dir(eng):
+    """并行模式独立 profile：首次从主 profile 复制（继承 cookie/登录态），之后自更新。
+    并行实例若共用主 profile 目录会触发 Chromium 目录锁冲突（同时启动必崩）。"""
+    base = config.PROFILE_DIR if eng in ("baidu", "bing") else config.MOBILE_PROFILE_DIR
+    par = f"{base}_{eng}"
+    if not os.path.exists(par) and os.path.exists(base):
+        with contextlib.suppress(Exception):
+            shutil.copytree(base, par)
+    return par
+
+
 class BrowserSession:
-    def __init__(self, profile_dir=None, mobile=False):
-        self._pw = _pw_singleton()
+    def __init__(self, profile_dir=None, mobile=False, own_pw=False):
+        self._own = own_pw
+        if own_pw:
+            # 独立 playwright 实例：sync API 线程绑定，必须在线程内 start/使用/stop
+            self._pw = sync_playwright().start()
+        else:
+            self._pw = _pw_singleton()
         profile = profile_dir or (config.MOBILE_PROFILE_DIR if mobile else config.PROFILE_DIR)
         _clean_session_files(profile)
         kw = {
@@ -142,4 +159,7 @@ class BrowserSession:
     def close(self):
         with contextlib.suppress(Exception):
             self.ctx.close()
-        # 不 stop 共享 _pw（由 stop_playwright() 统一收尾）
+        if self._own:
+            with contextlib.suppress(Exception):
+                self._pw.stop()
+        # 非 own：不 stop 共享 _pw（由 stop_playwright() 统一收尾）

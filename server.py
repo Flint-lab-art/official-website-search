@@ -33,7 +33,7 @@ from core.baidu import run_baidu
 from core.baidu_m import run_baidu_m
 from core.bing import run_bing
 from core.bing_m import run_bing_m
-from core.engine import BrowserSession, stop_playwright
+from core.engine import BrowserSession, par_profile_dir, stop_playwright
 
 # 支持 --port N 覆盖默认端口（dev/stable 双目录可同时运行不同端口）
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 27531
@@ -103,6 +103,7 @@ class State:
     healthcheck: "threading.Thread | None"
     current: "tuple[str, str] | None"
     captcha: "tuple[str, str] | None"
+    parallel: bool = False  # 并行模式：一个词内勾选平台同时跑
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -113,6 +114,7 @@ class State:
         self.skip_evt = threading.Event()
         self.current = None  # (kw, engine)
         self.captcha = None  # (engine, kw)
+        self.parallel = False
         self.start_ts: float | None = None  # 本次任务开始时刻（time.time），用于计时
         self.done = 0  # 已处理完的关键词数
         self.total_kw = 0  # 本次任务关键词总数
@@ -131,6 +133,8 @@ class State:
 
 
 STATE = State()
+# SQLite 并发写保护：并行模式下多线程共用一个 conn（check_same_thread=False）
+DB_LOCK = threading.Lock()
 
 
 # ================= 采集 Worker =================
@@ -155,36 +159,179 @@ class Worker(threading.Thread):
         else:
             STATE.log(f"   {ENG_LABEL.get(engine, engine)} 正在查第{pn}页（解析到{count}条结果）…")
 
+    def _ensure_page(self, eng, session, m_session, pages):
+        """懒开标签：优先复用浏览器启动自带的默认空白页（导航到目标平台），
+        没有再新建——避免窗口出现多余空白标签，也避免关默认页导致窗口关闭。
+        必须在主线程调用（playwright 跨线程 new_page 不安全）。"""
+        sess = session if eng in ("baidu", "bing") else m_session
+        if sess is None:
+            raise RuntimeError("浏览器会话未初始化")
+        if eng not in pages:
+            reused = None
+            for p in sess.ctx.pages:
+                if p.url in ("about:blank", "") and p not in pages.values():
+                    reused = p
+                    break
+            pages[eng] = reused if reused is not None else sess.new_page()
+
+    def _run_one(self, kw, eng, session, m_session, pages, conn):
+        """执行单个引擎的采集：搜索→命中→落库→日志。
+        并行模式下由各引擎线程调用；返回 True 表示该引擎因验证码被跳过。"""
+        func = RUNNERS[eng]
+        with STATE.lock:
+            STATE.current, STATE.captcha = (kw, ENG_LABEL[eng]), None
+        STATE.log(f"▶ {kw} [{ENG_LABEL[eng]}]")
+        sess = session if eng in ("baidu", "bing") else m_session
+        if sess is None:
+            raise RuntimeError("浏览器会话未初始化")
+        if eng in ("baidu", "baidu_m"):
+            r = func(
+                sess,
+                kw,
+                config.SCREENSHOT_DIR,
+                skip_evt=STATE.skip_evt,
+                notify=self.notify_captcha,
+                page=pages[eng],
+                on_page=self.on_page,
+            )
+        else:
+            r = func(sess, kw, config.SCREENSHOT_DIR, page=pages[eng], on_page=self.on_page)
+        with DB_LOCK:
+            db.update_result(
+                conn,
+                kw,
+                eng,
+                r["status"],
+                r.get("rank"),
+                r.get("page"),
+                r.get("evidence"),
+                r.get("shot"),
+            )
+        STATE.log(
+            f"   {ENG_LABEL[eng]} {ST_LABEL.get(r['status'], r['status'])} "
+            f"排名{r.get('rank')} 第{r.get('page')}页 | {r.get('evidence', '')[:50]}"
+        )
+        if STATE.skip_evt.is_set():
+            STATE.skip_evt.clear()
+            with DB_LOCK:
+                db.update_result(conn, kw, eng, "error", evidence="验证码跳过")
+            STATE.log("   已跳过（验证码）")
+            return True
+        return False
+
+    def _run_one_own(self, kw, eng, sess, page, conn):
+        """并行模式：平台流水线中的单个词。sess/page 由平台线程创建并全程复用。"""
+        with STATE.lock:
+            STATE.current, STATE.captcha = (kw, ENG_LABEL[eng]), None
+        STATE.log(f"▶ {kw} [{ENG_LABEL[eng]}]")
+        func = RUNNERS[eng]
+        if eng in ("baidu", "baidu_m"):
+            r = func(
+                sess,
+                kw,
+                config.SCREENSHOT_DIR,
+                skip_evt=STATE.skip_evt,
+                notify=self.notify_captcha,
+                page=page,
+                on_page=self.on_page,
+            )
+        else:
+            r = func(sess, kw, config.SCREENSHOT_DIR, page=page, on_page=self.on_page)
+        with DB_LOCK:
+            db.update_result(
+                conn,
+                kw,
+                eng,
+                r["status"],
+                r.get("rank"),
+                r.get("page"),
+                r.get("evidence"),
+                r.get("shot"),
+            )
+        STATE.log(
+            f"   {ENG_LABEL[eng]} {ST_LABEL.get(r['status'], r['status'])} "
+            f"排名{r.get('rank')} 第{r.get('page')}页 | {r.get('evidence', '')[:50]}"
+        )
+        if STATE.skip_evt.is_set():
+            STATE.skip_evt.clear()
+            with DB_LOCK:
+                db.update_result(conn, kw, eng, "error", evidence="验证码跳过")
+            STATE.log("   已跳过（验证码）")
+
+    def _pipeline_eng(self, eng, conn):
+        """并行模式：单平台流水线线程——一个持久窗口依次跑完本平台全部待跑关键词。
+        sync API 线程绑定，实例必须在本线程 start/使用/stop。"""
+        mobile = eng in ("baidu_m", "bing_m")
+        STATE.log(f"启动浏览器（{'移动版' if mobile else 'PC 版'}，{ENG_LABEL[eng]}）…")
+        try:
+            sess = BrowserSession(profile_dir=par_profile_dir(eng), mobile=mobile, own_pw=True)
+        except Exception as e:
+            STATE.log(f"   !! 浏览器启动失败（{ENG_LABEL[eng]}）: {e}")
+            with DB_LOCK:
+                for kw, engs in self.pending.items():
+                    if eng in engs:
+                        db.update_result(conn, kw, eng, "error", evidence=f"浏览器启动失败:{e}")
+            return
+        try:
+            # 复用启动自带的默认空白页，全程一个标签，避免窗口出现多余标签
+            page = None
+            for p in sess.ctx.pages:
+                if p.url in ("about:blank", ""):
+                    page = p
+                    break
+            if page is None:
+                page = sess.new_page()
+            for kw, engs in self.pending.items():
+                if eng not in engs:
+                    continue
+                if STATE.stop_evt.is_set():
+                    break
+                while STATE.pause_evt.is_set() and not STATE.stop_evt.is_set():
+                    time.sleep(0.3)
+                if STATE.stop_evt.is_set():
+                    break
+                if STATE.skip_evt.is_set():
+                    STATE.skip_evt.clear()
+                self._run_one_own(kw, eng, sess, page, conn)
+                with STATE.lock:
+                    self._kw_left[kw] -= 1
+                    if self._kw_left[kw] <= 0:
+                        STATE.done += 1
+        finally:
+            sess.close()
+            STATE.log(f"   {ENG_LABEL[eng]} 浏览器已关闭")
+
     def run(self):
         conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
         # 按待跑引擎决定开哪些浏览器窗口：只开需要的
         engs_needed = set()
         for engs in self.pending.values():
             engs_needed.update(engs)
-        need_pc = bool(engs_needed & {"baidu", "bing"})
-        need_m = bool(engs_needed & {"baidu_m", "bing_m"})
         session: BrowserSession | None = None
         m_session: BrowserSession | None = None
-        try:
-            if need_pc:
-                STATE.log("启动浏览器（PC 版）…")
-                session = BrowserSession()
-                STATE.log("PC 浏览器已就绪")
-            if need_m:
-                STATE.log("启动浏览器（移动版）…")
-                m_session = BrowserSession(mobile=True)
-                STATE.log("移动浏览器已就绪")
-            if not need_pc and not need_m:
-                with STATE.lock:
-                    STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = (
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                return
-        except Exception as e:
-            STATE.log(f"!! 浏览器启动失败: {e}")
+        if not STATE.parallel:
+            need_pc = bool(engs_needed & {"baidu", "bing"})
+            need_m = bool(engs_needed & {"baidu_m", "bing_m"})
+            try:
+                if need_pc:
+                    STATE.log("启动浏览器（PC 版）…")
+                    session = BrowserSession()
+                    STATE.log("PC 浏览器已就绪")
+                if need_m:
+                    STATE.log("启动浏览器（移动版）…")
+                    m_session = BrowserSession(mobile=True)
+                    STATE.log("移动浏览器已就绪")
+                if not need_pc and not need_m:
+                    with STATE.lock:
+                        STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = (
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                    return
+            except Exception as e:
+                STATE.log(f"!! 浏览器启动失败: {e}")
             try:
                 if session:
                     session.close()
@@ -203,72 +350,36 @@ class Worker(threading.Thread):
             STATE.done = 0
             STATE.total_kw = len(self.pending)
         try:
-            for kw, engs in self.pending.items():
-                if STATE.stop_evt.is_set():
-                    break
-                while STATE.pause_evt.is_set() and not STATE.stop_evt.is_set():
-                    time.sleep(0.3)
-                if STATE.stop_evt.is_set():
-                    break
-                if STATE.skip_evt.is_set():
-                    STATE.skip_evt.clear()
-
-                for eng in engs:
-                    func = RUNNERS[eng]
+            if STATE.parallel:
+                # 平台流水线：每个平台一个持久窗口/线程，各自依次跑完本平台全部待跑关键词
+                self._kw_left = {kw: len(e) for kw, e in self.pending.items()}
+                eng_threads = []
+                for eng in sorted(engs_needed):
+                    t = threading.Thread(target=self._pipeline_eng, args=(eng, conn), daemon=True)
+                    t.start()
+                    eng_threads.append(t)
+                for t in eng_threads:
+                    t.join()
+            else:
+                for kw, engs in self.pending.items():
                     if STATE.stop_evt.is_set():
                         break
-                    with STATE.lock:
-                        STATE.current, STATE.captcha = (kw, ENG_LABEL[eng]), None
-                    STATE.log(f"▶ {kw} [{ENG_LABEL[eng]}]")
-                    sess = session if eng in ("baidu", "bing") else m_session
-                    if sess is None:
-                        raise RuntimeError("浏览器会话未初始化")
-                    if eng not in pages:
-                        # 懒开标签：优先复用浏览器启动自带的默认空白页（导航到目标平台），
-                        # 没有再新建——避免窗口出现多余空白标签，也避免关默认页导致窗口关闭
-                        reused = None
-                        for p in sess.ctx.pages:
-                            if p.url in ("about:blank", "") and p not in pages.values():
-                                reused = p
-                                break
-                        pages[eng] = reused if reused is not None else sess.new_page()
-                    if eng in ("baidu", "baidu_m"):
-                        r = func(
-                            sess,
-                            kw,
-                            config.SCREENSHOT_DIR,
-                            skip_evt=STATE.skip_evt,
-                            notify=self.notify_captcha,
-                            page=pages[eng],
-                            on_page=self.on_page,
-                        )
-                    else:
-                        r = func(
-                            sess, kw, config.SCREENSHOT_DIR, page=pages[eng], on_page=self.on_page
-                        )
-                    db.update_result(
-                        conn,
-                        kw,
-                        eng,
-                        r["status"],
-                        r.get("rank"),
-                        r.get("page"),
-                        r.get("evidence"),
-                        r.get("shot"),
-                    )
-                    STATE.log(
-                        f"   {ENG_LABEL[eng]} {ST_LABEL.get(r['status'], r['status'])} "
-                        f"排名{r.get('rank')} 第{r.get('page')}页 | {r.get('evidence', '')[:50]}"
-                    )
+                    while STATE.pause_evt.is_set() and not STATE.stop_evt.is_set():
+                        time.sleep(0.3)
+                    if STATE.stop_evt.is_set():
+                        break
                     if STATE.skip_evt.is_set():
                         STATE.skip_evt.clear()
-                        db.update_result(conn, kw, eng, "error", evidence="验证码跳过")
-                        STATE.log("   已跳过（验证码）")
-                        break
+                    for eng in engs:
+                        if STATE.stop_evt.is_set():
+                            break
+                        self._ensure_page(eng, session, m_session, pages)
+                        if self._run_one(kw, eng, session, m_session, pages, conn):
+                            break  # 验证码跳过：不再跑该词剩余引擎
 
-                done += 1
-                with STATE.lock:
-                    STATE.done = done
+                    done += 1
+                    with STATE.lock:
+                        STATE.done = done
         except Exception as e:
             STATE.log(f"!! 运行异常: {e}")
         finally:
@@ -490,6 +601,7 @@ class Handler(BaseHTTPRequestHandler):
             STATE.stop_evt.clear()
             STATE.pause_evt.clear()
             STATE.skip_evt.clear()
+            STATE.parallel = bool(data.get("parallel"))
             w = Worker(pending)
             with STATE.lock:
                 STATE.worker = w
@@ -900,6 +1012,7 @@ input[type=file]{display:none;}
     <label><input type="checkbox" id="chkBing" checked> 必应PC</label>
     <label><input type="checkbox" id="chkBm" checked> 百度移动</label>
     <label><input type="checkbox" id="chkGm" checked> 必应移动</label>
+    <label title="一个关键词内，勾选的多个平台同时跑（每个平台一个标签页），词与词之间仍按顺序"><input type="checkbox" id="chkParallel"> 并行模式</label>
     <span style="color:var(--gray);">（勾选决定「导入」给关键词配置哪些平台，以及「开始」时实际跑哪些平台；表格里单个平台出错可点 ↻ 单独补跑）</span>
   </div>
 
@@ -1088,7 +1201,7 @@ input[type=file]{display:none;}
   window.retryEng=retryEng;
   btn.start.onclick=function(){
     var lim=by("inpLimit").value.trim();
-    api("/api/start","POST",{limit:lim, engines:selEngines()}).then(function(r){if(r.error)alert(r.error);});
+    api("/api/start","POST",{limit:lim, engines:selEngines(), parallel:by("chkParallel").checked}).then(function(r){if(r.error)alert(r.error);});
   };
   // 勾选平台变化 → 重算行背景与待跑数（表格行是否「跑过」随勾选变化）
   ["chkBaidu","chkBing","chkBm","chkGm"].forEach(function(id){

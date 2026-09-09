@@ -140,6 +140,8 @@ cython_debug/
 # ===== 本项目运行产物 =====
 # 浏览器用户目录（含 cookie/登录态，敏感）
 profile/
+# 并行模式独立 profile（首次复制自主 profile，含 cookie，敏感）
+profile_*/
 # 命中页全图截图（数据产物）
 screenshots/
 # 运行数据库（结果数据）
@@ -153,3 +155,4 @@ keywords.txt
 
 # 运行日志（详细落盘）
 logs/
+config_local.py
