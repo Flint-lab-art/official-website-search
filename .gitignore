@@ -150,3 +150,6 @@ profile_mobile/
 
 # 业务关键词清单（本地使用，不进仓库）
 keywords.txt
+
+# 运行日志（详细落盘）
+logs/

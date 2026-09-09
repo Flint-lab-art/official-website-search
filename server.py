@@ -22,6 +22,7 @@ for _s in (sys.stdout, sys.stderr):
             pass
 
 from core import config, db
+from core import logger
 from core.engine import BrowserSession, stop_playwright
 from core.baidu import run_baidu
 from core.bing import run_bing
@@ -31,9 +32,15 @@ from core.bing_m import run_bing_m
 PORT = 27531
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON = os.path.join(BASE_DIR, "favicon.png")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 ST_LABEL = {"pending": "等待", "hit": "命中", "none": "未命中", "error": "错误",
             "restricted": "受限", "malfunction": "解析异常"}
 ENG_LABEL = {"baidu": "百度PC", "bing": "必应PC", "baidu_m": "百度移动", "bing_m": "必应移动"}
+
+
+def _append_log_file(line):
+    """面板日志落盘：统一走 core.logger（logs/run_YYYYMMDD.log）"""
+    logger.info(line)
 
 # 导出可选列：(id, 表头, 行索引, 类型, 列宽)
 # 类型: raw=直取, st=状态转标签, shot=截图(文件名+超链接), concl=结论, kw=关键词
@@ -85,8 +92,10 @@ class State:
         self.logs = deque(maxlen=800)
 
     def log(self, text):
+        ts = time.strftime("%H:%M:%S")
         with self.lock:
-            self.logs.append((time.strftime("%H:%M:%S"), text))
+            self.logs.append((ts, text))
+        _append_log_file(f"[{ts}] {text}")
 
     def snapshot_logs(self, since=0):
         with self.lock:
@@ -1058,6 +1067,9 @@ def main():
     no_browser = "--no-browser" in sys.argv
     os.makedirs(config.SCREENSHOT_DIR, exist_ok=True)
     db.init_db(config.DB_PATH)
+    _append_log_file("")
+    _append_log_file("=" * 64)
+    _append_log_file(f"== 官网检索器启动 {time.strftime('%Y-%m-%d %H:%M:%S')} ==")
     HTTPD = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     url = f"http://127.0.0.1:{PORT}/"
     print(f"官网检索器已启动: {url}")

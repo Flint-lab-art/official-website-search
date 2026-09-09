@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """必应采集：搜索、过滤广告（兜底）、域名匹配、URL 参数翻页"""
-import os, re, random
+import os, re, random, traceback
 from urllib.parse import quote
 
 from . import config
+from . import logger
 from .engine import scroll_trigger, wait_render_ready
 
 SEARCH_URL = "https://cn.bing.com/search?q={}&ensearch=0&first={}"
@@ -34,16 +35,21 @@ def _parse_page(page):
 
 
 def _is_restricted(page):
-    """必应受限页检测：合规过滤（部分搜索结果未予显示）或知识卡空结果页"""
+    """必应受限页检测，返回受限原因（str）或 None。
+    注意：cn.bing.com 结果页 body 通常自带「未予显示」合规提示文本，
+    即使页面有正常结果也会出现——所以必须 b_algo==0（真无结果）时才判受限，
+    否则所有正常结果页都会被误判为受限。"""
     try:
         body = page.locator("body").inner_text(timeout=5000) or ""
     except Exception:
-        return False
-    if "部分搜索结果未予显示" in body or "未予显示" in body:
-        return True
-    if "深入了解" in body and page.locator("li.b_algo").count() == 0:
-        return True
-    return False
+        return None
+    n_algo = page.locator("li.b_algo").count()
+    if n_algo == 0:
+        if "部分搜索结果未予显示" in body or "未予显示" in body:
+            return f"b_algo=0 且 body含'未予显示'"
+        if "深入了解" in body:
+            return f"b_algo=0 且 body含'深入了解'"
+    return None
 
 
 def _is_domain_hit(r):
@@ -66,7 +72,7 @@ def run_bing(session, keyword, shot_dir, page=None, on_page=None):
                 on_page(keyword, "bing", pn)
             if pn == 1:
                 # P1：必应首页 → 输入关键词 → 回车（同用户手动搜索）
-                page.goto("https://www.bing.com/?mkt=zh-CN", timeout=60000,
+                page.goto("https://cn.bing.com/", timeout=60000,
                           wait_until="domcontentloaded")
                 page.wait_for_timeout(config.PAGE_WAIT_MS)
                 page.wait_for_selector("input[name='q']", timeout=20000)
@@ -74,26 +80,44 @@ def run_bing(session, keyword, shot_dir, page=None, on_page=None):
                 page.keyboard.press("Enter")
                 page.wait_for_load_state("domcontentloaded", timeout=30000)
                 page.wait_for_timeout(config.PAGE_WAIT_MS)
+                logger.debug("bing", f"P1 回车后 URL: {page.url[:120]}")
             else:
                 first = (pn - 1) * 10 + 1
                 url = SEARCH_URL.format(quote(keyword), first)
                 page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 page.wait_for_timeout(config.PAGE_WAIT_MS)
+                logger.debug("bing", f"P{pn} 直达 URL: {page.url[:120]}")
+
+            # 等结果区渲染完成（异步渲染：DOM/网络加载慢时 b_algo 可能还没出现，
+            # 不等就解析会得到 0 条，再被「深入了解」误判为受限页）
+            try:
+                page.wait_for_selector("li.b_algo", state="visible", timeout=8000)
+                algo_ok = True
+            except Exception:
+                algo_ok = False
+            page.wait_for_timeout(600)
+            n_algo = page.locator("li.b_algo").count()
+            logger.debug("bing", f"P{pn} 等b_algo={'出现' if algo_ok else '超时'} 实际数量={n_algo}")
 
             results = _parse_page(page)
+            logger.debug("bing", f"P{pn} 解析 {len(results)} 条")
             for r in results:
                 if _is_domain_hit(r):
+                    logger.debug("bing", f"P{pn} 命中 自然第{r['rank']}位 cite:{r['cite'][:40]}")
                     shot = _screenshot(page, keyword, pn, "bing", shot_dir)
                     evidence = f"自然第{r['rank']}位｜cite:{r['cite'][:40]}"
                     return {"status": config.ST_HIT, "rank": r["rank"],
                             "page": pn, "evidence": evidence, "shot": shot}
             # 受限页：合规过滤/知识卡空结果，无自然结果可判定，立即停止翻页
-            if _is_restricted(page):
+            r_reason = _is_restricted(page)
+            logger.debug("bing", f"P{pn} 受限判断: {r_reason}")
+            if r_reason:
                 return {"status": config.ST_RESTRICTED,
-                        "evidence": f"第{pn}页：必应受限页（结果被过滤），无法判定"}
+                        "evidence": f"第{pn}页：必应受限页（{r_reason}），无法判定"}
             # 熔断：连续多页 0 条（页面结构失效/被拦截）→ 解析异常，避免误报未命中
             zero_pages = zero_pages + 1 if len(results) == 0 else 0
             if zero_pages >= config.ZERO_RESULT_BREAK:
+                logger.debug("bing", f"P{pn} 熔断：连续{zero_pages}页0条")
                 return {"status": config.ST_MALFUNCTION,
                         "evidence": f"连续{zero_pages}页解析出0条结果，疑似页面结构变化或搜索被拦截"}
             # 未命中：页尾判断，防止无限翻
@@ -103,6 +127,7 @@ def run_bing(session, keyword, shot_dir, page=None, on_page=None):
                 session.random_delay()
         return {"status": config.ST_NONE, "evidence": f"前{config.MAX_PAGES}页未出现 {config.TARGET_DOMAIN}"}
     except Exception as e:
+        logger.error("bing", f"{keyword} 异常: {e}\n{traceback.format_exc()}")
         return {"status": config.ST_ERROR, "evidence": f"异常:{e}"}
     finally:
         if own_page:

@@ -3,8 +3,10 @@
 判定：结果条目来源行 =「Elo®中国官网」标识（与 PC 同套）
 翻页：点击「下一页」按钮（pn= 直达会被风控触发验证码，实测确认）
 """
+import traceback
 from urllib.parse import quote
 from core import config
+from core import logger
 from core.engine import is_captcha, wait_for_captcha, scroll_trigger
 
 SEARCH_URL = "https://m.baidu.com/s?word={kw}"
@@ -236,6 +238,7 @@ def run_baidu_m(session, keyword, shot_dir, skip_evt=None, notify=None, page=Non
         page.goto(SEARCH_URL.format(kw=quote(keyword)), timeout=60000,
                   wait_until="domcontentloaded")
         page.wait_for_timeout(config.PAGE_WAIT_MS)
+        logger.debug("baidu_m", f"P1 URL: {page.url[:120]}")
         # 保险：首屏慢（冷启动/AI摘要流式输出）时等结果容器出现，避免误判 0 条触发熔断
         try:
             page.wait_for_selector("div.c-result", timeout=8000)
@@ -245,6 +248,7 @@ def run_baidu_m(session, keyword, shot_dir, skip_evt=None, notify=None, page=Non
         zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
             if is_captcha(page, "baidu"):
+                logger.debug("baidu_m", f"P{pn} 检测到验证码")
                 r = wait_for_captcha(page, "baidu", keyword, skip_evt=skip_evt, notify=notify)
                 if r == "skip":
                     return {"status": config.ST_ERROR, "evidence": "验证码跳过"}
@@ -254,17 +258,20 @@ def run_baidu_m(session, keyword, shot_dir, skip_evt=None, notify=None, page=Non
             _close_popups(page)  # 先关弹窗广告，避免遮挡/干扰解析
 
             parsed = _parse_page(page)
+            logger.debug("baidu_m", f"P{pn} 解析 {len(parsed)} 条")
             if on_page:
                 # 解析后上报页码+结果条数，面板日志可见（替代 print，print 不会进面板日志）
                 on_page(keyword, "baidu_m", pn, len(parsed))
             # 熔断：连续多页 0 条（页面结构失效/被拦截）→ 解析异常，避免误报未命中
             zero_pages = zero_pages + 1 if len(parsed) == 0 else 0
             if zero_pages >= config.ZERO_RESULT_BREAK:
+                logger.debug("baidu_m", f"P{pn} 熔断：连续{zero_pages}页0条")
                 return {"status": config.ST_MALFUNCTION,
                         "evidence": f"连续{zero_pages}页解析出0条结果，疑似页面结构变化或搜索被拦截"}
 
             for rank, src, title in parsed:
                 if _is_hit(src, title):
+                    logger.debug("baidu_m", f"P{pn} 命中 自然第{rank}位 来源:{src or title[:20]}")
                     _close_popups(page)  # 截图前再关一次弹窗
                     shot = _screenshot(page, keyword, pn, "baidu_m", shot_dir)
                     evidence = f"自然第{rank}位｜来源:{src or title[:20]}"
@@ -272,6 +279,7 @@ def run_baidu_m(session, keyword, shot_dir, skip_evt=None, notify=None, page=Non
                             "evidence": evidence, "shot": shot}
             if pn < config.MAX_PAGES:
                 r = _click_next(page, pn)
+                logger.debug("baidu_m", f"P{pn} 翻页结果: {r}")
                 if r == "captcha":
                     r = wait_for_captcha(page, "baidu", keyword, skip_evt=skip_evt, notify=notify)
                     if r == "skip":
@@ -284,7 +292,7 @@ def run_baidu_m(session, keyword, shot_dir, skip_evt=None, notify=None, page=Non
                 session.random_delay()
         return {"status": config.ST_NONE, "evidence": f"前{config.MAX_PAGES}页未出现官网标识"}
     except Exception as e:
-        import traceback; traceback.print_exc()
+        logger.error("baidu_m", f"{keyword} 异常: {e}\n{traceback.format_exc()}")
         return {"status": config.ST_ERROR, "evidence": f"异常:{e}"}
     finally:
         if own_page:

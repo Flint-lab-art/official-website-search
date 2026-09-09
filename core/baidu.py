@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """百度采集：搜索、过滤广告、识别 Elo 官网标识、翻页、验证码处理"""
-import random
+import random, traceback
 from urllib.parse import quote
 
 from . import config
+from . import logger
 from .engine import is_captcha, wait_for_captcha, scroll_trigger
 
 SEARCH_URL = "https://www.baidu.com/s?wd={}"
@@ -75,6 +76,7 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None,
         page.goto(SEARCH_URL.format(quote(keyword)), timeout=60000,
                   wait_until="domcontentloaded")
         page.wait_for_timeout(config.PAGE_WAIT_MS)
+        logger.debug("baidu", f"P1 URL: {page.url[:120]}")
 
         zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
@@ -82,6 +84,7 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None,
                 on_page(keyword, "baidu", pn)
             # 验证码检测
             if is_captcha(page, "baidu"):
+                logger.debug("baidu", f"P{pn} 检测到验证码")
                 r = wait_for_captcha(page, "baidu", keyword, skip_evt=skip_evt, notify=notify)
                 if r == "skip":
                     return {"status": config.ST_ERROR, "evidence": "验证码跳过"}
@@ -90,13 +93,16 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None,
                 page.wait_for_timeout(config.PAGE_WAIT_MS)
 
             results = _parse_page(page)
+            logger.debug("baidu", f"P{pn} 解析 {len(results)} 条")
             # 熔断：连续多页 0 条（页面结构失效/被拦截）→ 解析异常，避免误报未命中
             zero_pages = zero_pages + 1 if len(results) == 0 else 0
             if zero_pages >= config.ZERO_RESULT_BREAK:
+                logger.debug("baidu", f"P{pn} 熔断：连续{zero_pages}页0条")
                 return {"status": config.ST_MALFUNCTION,
                         "evidence": f"连续{zero_pages}页解析出0条结果，疑似页面结构变化或搜索被拦截"}
             for r in results:
                 if _is_elo_official(r["title"], r["source"]):
+                    logger.debug("baidu", f"P{pn} 命中 自然第{r['rank']}位 来源:{r['source'][:30]}")
                     shot = _screenshot(page, keyword, pn, "baidu", shot_dir)
                     evidence = f"自然第{r['rank']}位｜来源:{r['source'][:30]}｜标题:{r['title'][:40]}"
                     return {"status": config.ST_HIT, "rank": r["rank"],
@@ -105,9 +111,11 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None,
             if pn < config.MAX_PAGES:
                 session.random_delay()
                 if not _next_page(page, pn + 1):
+                    logger.debug("baidu", f"P{pn} 翻页失败：第{pn+1}页链接不存在")
                     return {"status": config.ST_NONE, "evidence": f"翻到第{pn}页无更多"}
         return {"status": config.ST_NONE, "evidence": f"前{config.MAX_PAGES}页未出现官网标识"}
     except Exception as e:
+        logger.error("baidu", f"{keyword} 异常: {e}\n{traceback.format_exc()}")
         return {"status": config.ST_ERROR, "evidence": f"异常:{e}"}
     finally:
         if own_page:
