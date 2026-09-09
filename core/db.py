@@ -44,7 +44,8 @@ def init_db(db_path):
     return conn
 
 def ensure_keywords(conn, keywords, engines=None):
-    """把关键词插入任务表（已存在的跳过）；engines: 该词要查的平台列表"""
+    """把关键词插入任务表；已存在的词也更新平台配置（导入勾选对新旧词都生效）。
+    只改 engines 字段，保留已有结果状态——已跑过的平台不会因导入而重跑。"""
     engines = engines or list(ALL_ENGINES)
     engines_str = ",".join(engines)
     for kw in keywords:
@@ -52,7 +53,8 @@ def ensure_keywords(conn, keywords, engines=None):
         if not kw:
             continue
         conn.execute(
-            "INSERT OR IGNORE INTO tasks (keyword, engines, updated_at) VALUES (?, ?, ?)",
+            "INSERT INTO tasks (keyword, engines, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(keyword) DO UPDATE SET engines=excluded.engines, updated_at=excluded.updated_at",
             (kw, engines_str, _now()))
     conn.commit()
 

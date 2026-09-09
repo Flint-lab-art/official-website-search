@@ -63,9 +63,10 @@ def _next_page(page, page_no):
     return True
 
 
-def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None):
+def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None, on_page=None):
     """搜索 keyword，翻前 MAX_PAGES 页，命中即停。
     page 可传入复用的标签页（不传则新建/用完关闭）。
+    on_page(kw, engine, pn) 每翻到一页时回调（用于面板日志显示页码进度）。
     返回 dict: status / rank / page / evidence / screenshot"""
     own_page = page is None
     if page is None:
@@ -77,6 +78,8 @@ def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None)
 
         zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
+            if on_page:
+                on_page(keyword, "baidu", pn)
             # 验证码检测
             if is_captcha(page, "baidu"):
                 r = wait_for_captcha(page, "baidu", keyword, skip_evt=skip_evt, notify=notify)

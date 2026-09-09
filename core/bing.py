@@ -50,17 +50,20 @@ def _is_domain_hit(r):
     return config.TARGET_DOMAIN in r["cite"] or config.TARGET_DOMAIN in r["href"]
 
 
-def run_bing(session, keyword, shot_dir, page=None):
+def run_bing(session, keyword, shot_dir, page=None, on_page=None):
     """搜索 keyword，翻前 MAX_PAGES 页，命中即停。
     P1 走「首页→输入→回车」（消除直达 URL 的搜索偏差，保证原生页码条渲染）；
     P2+ 用 first= 参数直达翻页。
-    page 可传入复用的标签页（不传则新建/用完关闭）。"""
+    page 可传入复用的标签页（不传则新建/用完关闭）。
+    on_page(kw, engine, pn) 每翻到一页时回调（用于面板日志显示页码进度）。"""
     own_page = page is None
     if page is None:
         page = session.new_page()
     try:
         zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
+            if on_page:
+                on_page(keyword, "bing", pn)
             if pn == 1:
                 # P1：必应首页 → 输入关键词 → 回车（同用户手动搜索）
                 page.goto("https://www.bing.com/?mkt=zh-CN", timeout=60000,

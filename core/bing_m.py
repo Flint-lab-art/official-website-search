@@ -54,8 +54,9 @@ def _is_restricted(page):
     return False
 
 
-def run_bing_m(session, keyword, shot_dir, page=None):
-    """搜索 keyword，翻前 MAX_PAGES 页，命中即停。"""
+def run_bing_m(session, keyword, shot_dir, page=None, on_page=None):
+    """搜索 keyword，翻前 MAX_PAGES 页，命中即停。
+    on_page(kw, engine, pn) 每翻到一页时回调（用于面板日志显示页码进度）。"""
     own_page = page is None
     if page is None:
         page = session.new_page()
@@ -71,6 +72,8 @@ def run_bing_m(session, keyword, shot_dir, page=None):
 
         zero_pages = 0  # 熔断计数：连续解析出 0 条的页数
         for pn in range(1, config.MAX_PAGES + 1):
+            if on_page:
+                on_page(keyword, "bing_m", pn)
             if pn > 1:
                 first = (pn - 1) * 10 + 1
                 page.goto(SEARCH_URL.format(kw=quote(keyword), first=first), timeout=60000,

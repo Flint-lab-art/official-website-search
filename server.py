@@ -112,6 +112,13 @@ class Worker(threading.Thread):
             STATE.captcha = (engine, keyword)
         STATE.log(f"[验证码] {engine}「{keyword}」请在浏览器窗口手动完成验证")
 
+    def on_page(self, keyword, engine, pn, count=None):
+        """每个关键词翻到第几页时实时写日志；count 为解析到的结果条数"""
+        if count is None:
+            STATE.log(f"   {ENG_LABEL.get(engine, engine)} 正在查第{pn}页…")
+        else:
+            STATE.log(f"   {ENG_LABEL.get(engine, engine)} 正在查第{pn}页（解析到{count}条结果）…")
+
     def run(self):
         conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
         # 按待跑引擎决定开哪些浏览器窗口：只开需要的
@@ -147,12 +154,7 @@ class Worker(threading.Thread):
                 STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = None, None, None, None
             return
         pages = {}
-        if session:
-            pages["baidu"] = session.new_page()
-            pages["bing"] = session.new_page()
-        if m_session:
-            pages["baidu_m"] = m_session.new_page()
-            pages["bing_m"] = m_session.new_page()
+        # 标签页懒开：用到哪个平台才 new_page，避免启动时预开一堆空白标签
         done = 0
         with STATE.lock:
             STATE.start_ts = time.time()
@@ -177,12 +179,22 @@ class Worker(threading.Thread):
                         STATE.current, STATE.captcha = (kw, ENG_LABEL[eng]), None
                     STATE.log(f"▶ {kw} [{ENG_LABEL[eng]}]")
                     sess = session if eng in ("baidu", "bing") else m_session
+                    if eng not in pages:
+                        # 懒开标签：优先复用浏览器启动自带的默认空白页（导航到目标平台），
+                        # 没有再新建——避免窗口出现多余空白标签，也避免关默认页导致窗口关闭
+                        reused = None
+                        for p in sess.ctx.pages:
+                            if p.url in ("about:blank", "") and p not in pages.values():
+                                reused = p
+                                break
+                        pages[eng] = reused if reused is not None else sess.new_page()
                     if eng in ("baidu", "baidu_m"):
                         r = func(sess, kw, config.SCREENSHOT_DIR,
                                  skip_evt=STATE.skip_evt, notify=self.notify_captcha,
-                                 page=pages[eng])
+                                 page=pages[eng], on_page=self.on_page)
                     else:
-                        r = func(sess, kw, config.SCREENSHOT_DIR, page=pages[eng])
+                        r = func(sess, kw, config.SCREENSHOT_DIR,
+                                 page=pages[eng], on_page=self.on_page)
                     db.update_result(conn, kw, eng, r["status"],
                                      r.get("rank"), r.get("page"),
                                      r.get("evidence"), r.get("shot"))
@@ -356,6 +368,7 @@ class Handler(BaseHTTPRequestHandler):
     def _do_POST(self):
         path = urlparse(self.path).path
         if path == "/api/start":
+            data = self._read_body()
             with STATE.lock:
                 if STATE.worker and STATE.worker.is_alive():
                     return self._send_json({"error": "已在运行"})
@@ -364,6 +377,30 @@ class Handler(BaseHTTPRequestHandler):
             pending = db.load_pending(db.init_db(config.DB_PATH))
             if not pending:
                 return self._send_json({"error": "没有待处理关键词"})
+            # 按勾选的平台过滤（取消勾选的平台本次不跑，也不开对应浏览器窗口）
+            want = [str(e).strip() for e in (data.get("engines") or []) if str(e).strip() in db.ALL_ENGINES]
+            if want:
+                ws = set(want)
+                pending = {kw: [e for e in engs if e in ws]
+                           for kw, engs in pending.items() if any(e in ws for e in engs)}
+                if not pending:
+                    return self._send_json({"error": "勾选平台下没有待处理关键词"})
+            # 本次上限：填了数字就只跑前 N 个关键词，剩余保持等待、下次可续跑
+            limit = 0
+            raw = str(data.get("limit", "")).strip()
+            if raw:
+                try:
+                    limit = int(raw)
+                except ValueError:
+                    limit = 0
+            note = ""
+            if limit > 0:
+                total_pending = len(pending)
+                if total_pending > limit:
+                    pending = dict(list(pending.items())[:limit])
+                    note = f"，本次上限 {limit} 条，剩余 {total_pending - limit} 条保持等待"
+                else:
+                    note = f"，本次上限 {limit} 条（全部 {total_pending} 条均处理）"
             STATE.stop_evt.clear()
             STATE.pause_evt.clear()
             STATE.skip_evt.clear()
@@ -371,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 STATE.worker = w
             w.start()
-            STATE.log(f"开始处理 {len(pending)} 个关键词…")
+            STATE.log(f"开始处理 {len(pending)} 个关键词…{note}")
             return self._send_json({"ok": True, "pending": len(pending)})
         if path == "/api/retry":
             data = self._read_body()
@@ -720,6 +757,11 @@ input[type=file]{display:none;}
     <button id="btnPaste">粘贴关键词</button>
     <button id="btnClear" class="danger">清空</button>
     <input type="file" id="fileInput" accept=".txt,.xlsx,.xls">
+    <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub);">
+      本次上限 <input id="inpLimit" type="number" min="1" placeholder="全部"
+      style="width:70px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;font-size:13px;background:#fff;color:var(--text);"
+      title="只跑前 N 个关键词，跑完自动停止，剩余保持等待"> 条
+    </span>
     <span class="spacer"></span>
     <button id="btnStart" class="primary">▶ 开始</button>
     <button id="btnPause" disabled>⏸ 暂停</button>
@@ -730,16 +772,17 @@ input[type=file]{display:none;}
   </div>
 
   <div class="engbar" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-bottom:10px;font-size:13px;color:var(--sub);">
-    <span>本次导入查的平台：</span>
+    <span>本次任务查的平台：</span>
     <label><input type="checkbox" id="chkBaidu" checked> 百度PC</label>
     <label><input type="checkbox" id="chkBing" checked> 必应PC</label>
     <label><input type="checkbox" id="chkBm" checked> 百度移动</label>
     <label><input type="checkbox" id="chkGm" checked> 必应移动</label>
-    <span style="color:var(--gray);">（勾选决定新导入关键词查哪些平台；表格里单个平台出错可点 ↻ 单独补跑）</span>
+    <span style="color:var(--gray);">（勾选决定「导入」给关键词配置哪些平台，以及「开始」时实际跑哪些平台；表格里单个平台出错可点 ↻ 单独补跑）</span>
   </div>
 
   <div class="statbar">
     <span>进度 <b id="stProg">0 / 0</b></span>
+    <span>剩余 <b id="stLeft">--</b></span>
     <span>已用 <b id="stElapsed">--</b></span>
     <span>预计剩余 <b id="stEta">--</b></span>
     <span>百度PC <b id="stBd">0</b></span>
@@ -839,7 +882,8 @@ input[type=file]{display:none;}
     fetch("/api/state").then(function(r){return r.json();}).then(function(s){
       var sig=JSON.stringify(s.tasks);
       if(sig!==lastTasks){lastTasks=sig;tbl=s.tasks;render();}
-      by("stProg").textContent=(s.total-(s.tasks.filter(function(t){return t.bd!=="等待"&&t.bg!=="等待"&&t.bm!=="等待"&&t.gm!=="等待";}).length))+" / "+s.total;
+      by("stProg").textContent=s.done+" / "+s.total_kw;
+      by("stLeft").textContent=s.running?Math.max(s.total_kw-s.done,0):"--";
       if(s.running&&s.start_ts){
         var el=Date.now()/1000-s.start_ts;
         var per=el/Math.max(s.done,1);
@@ -889,7 +933,10 @@ input[type=file]{display:none;}
     api("/api/retry","POST",{keyword:kw,engine:eng}).then(function(r){if(r.error)alert(r.error);});
   }
   window.retryEng=retryEng;
-  btn.start.onclick=function(){api("/api/start","POST").then(function(r){if(r.error)alert(r.error);});};
+  btn.start.onclick=function(){
+    var lim=by("inpLimit").value.trim();
+    api("/api/start","POST",{limit:lim, engines:selEngines()}).then(function(r){if(r.error)alert(r.error);});
+  };
   btn.pause.onclick=function(){api("/api/pause","POST");};
   btn.skip.onclick=function(){api("/api/skip","POST");};
   btn.stop.onclick=function(){api("/api/stop","POST");};

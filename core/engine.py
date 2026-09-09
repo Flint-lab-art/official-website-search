@@ -126,6 +126,8 @@ class BrowserSession:
             kw["user_agent"] = config.USER_AGENT
             kw["viewport"] = config.VIEWPORT
         self.ctx = self._pw.chromium.launch_persistent_context(profile, **kw)
+        # 注意：不能关闭启动自带的默认空白页——关掉最后一个标签页会导致整个浏览器窗口关闭，
+        # 后续 new_page 会报 "Failed to open a new tab"。默认页由调用方复用（见 server.py）。
         self.pages = []
 
     def new_page(self):
