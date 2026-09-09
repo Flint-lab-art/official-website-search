@@ -1,12 +1,13 @@
 """必应采集：搜索、过滤广告（兜底）、域名匹配、URL 参数翻页"""
 
+import contextlib
 import os
 import re
 import traceback
 from urllib.parse import quote
 
 from . import config, logger
-from .engine import scroll_trigger, wait_render_ready
+from .engine import wait_render_ready
 
 SEARCH_URL = "https://cn.bing.com/search?q={}&ensearch=0&first={}"
 
@@ -148,6 +149,49 @@ def run_bing(session, keyword, shot_dir, page=None, on_page=None):
             session.close_page(page)
 
 
+def _wait_bing_stable(page):
+    """必应国内版底部有图片/视频懒加载模块：
+    分段滚到底触发加载，等所有图片 complete + 网络空闲 + 高度稳定后回顶，
+    避免 full_page 截图捕获到「加载中」的空白/半成品。"""
+    # 1) 把懒加载图改为立即加载并触发重载
+    with contextlib.suppress(Exception):
+        page.evaluate(
+            """() => {
+                document.querySelectorAll('img[loading="lazy"]').forEach(function(i) {
+                    i.loading = 'eager';
+                    var s = i.getAttribute('src');
+                    if (s) i.src = s;
+                });
+            }"""
+        )
+    # 2) 分段滚到底：每步等高度稳定（防无限滚动）
+    for _ in range(10):
+        try:
+            h1 = page.evaluate("document.body.scrollHeight")
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(900)
+            h2 = page.evaluate("document.body.scrollHeight")
+            if h2 <= h1:
+                break
+        except Exception:
+            break
+    # 3) 等所有图片加载完成（超时忽略，避免个别坏图卡死）
+    with contextlib.suppress(Exception):
+        page.wait_for_function(
+            "() => Array.from(document.images).every(i => i.complete)", timeout=8000
+        )
+    # 4) 网络空闲 + 稳定
+    with contextlib.suppress(Exception):
+        page.wait_for_load_state("networkidle", timeout=5000)
+    page.wait_for_timeout(800)
+    # 5) 回顶
+    try:
+        page.evaluate("window.scrollTo(0, 0)")
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+
 def _screenshot(page, keyword, pn, engine, shot_dir):
     safe = re.sub(r'[\\/:*?"<>|]', "_", keyword)
     sub = config.SHOT_PLATFORM_DIR.get(engine, "")
@@ -157,7 +201,7 @@ def _screenshot(page, keyword, pn, engine, shot_dir):
     try:
         # 必应结果区为异步渲染：DOM 出现 ≠ 已绘制，截图前强制等渲染完成
         wait_render_ready(page)
-        scroll_trigger(page)
+        _wait_bing_stable(page)  # 滚动触发底部懒加载并等稳定，避免截图半成品
         page.screenshot(path=path, full_page=True)
         return path
     except Exception:

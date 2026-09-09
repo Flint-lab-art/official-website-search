@@ -20,7 +20,8 @@ PAGE_WAIT_MS = 3000  # 页面加载后额外等待
 # ---- 路径 ----
 PROFILE_DIR = os.path.join(BASE_DIR, "profile")  # 浏览器用户目录（cookie 持久化）
 # 截图放桌面独立目录（不放代码文件夹），按平台分子文件夹
-SCREENSHOT_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "Elo官网检索截图")
+# dev 版截图与稳定版分开存放，避免混用（稳定版在 Elo官网检索截图/）
+SCREENSHOT_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "Elo官网检索截图-dev")
 # 引擎 → 平台子目录
 SHOT_PLATFORM_DIR = {
     "baidu": "百度/PC",

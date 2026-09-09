@@ -35,7 +35,8 @@ from core.bing import run_bing
 from core.bing_m import run_bing_m
 from core.engine import BrowserSession, stop_playwright
 
-PORT = 27531
+# 支持 --port N 覆盖默认端口（dev/stable 双目录可同时运行不同端口）
+PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 27531
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON = os.path.join(BASE_DIR, "favicon.png")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
