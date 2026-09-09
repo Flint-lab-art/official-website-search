@@ -1,0 +1,21 @@
+[project]
+name = "official-website-search"
+version = "1.0.0"
+description = "批量关键词官网可见性检索：百度/必应 × PC/移动 前10页扫描官网标识/域名"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    # playwright 与稳定版(main)保持一致，浏览器二进制可复用（%LOCALAPPDATA%\ms-playwright）
+    "playwright==1.62.0",
+    "openpyxl>=3.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.uv]
+# 纯脚本项目（非包）：只装依赖到 .venv，不构建项目本身
+package = false

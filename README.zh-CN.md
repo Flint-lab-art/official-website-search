@@ -34,8 +34,12 @@
 **Windows**
 
 ```powershell
-# 1. 安装依赖（自动建 .venv + 按 requirements.txt 装包 + Chromium）
+# 1. 安装依赖（优先 uv，无 uv 回退 pip；自动建 .venv + 下载 Chromium）
 #    双击 scripts\install.bat，或命令行执行：
+#    有 uv（推荐，版本由 uv.lock 锁定）：
+uv sync
+uv run playwright install chromium
+#    无 uv：
 py -3.13 -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 .\.venv\Scripts\python -m playwright install chromium
@@ -70,7 +74,8 @@ main.py            CLI 入口（备用，与面板同一套采集核心）
 healthcheck.py     健康检查：真实浏览器验证解析/判定逻辑仍有效（DOM 未改版）
 pick_p1_shots.py   挑取「第一页命中」截图：从 results.db 筛 page=1 且命中的记录，把截图归集到 `Elo官网检索截图/第一页命中/`（按平台分子文件夹）并生成清单 txt
 tests/             单元测试（pytest）：配置/判定/db
-requirements.txt   依赖清单（playwright / openpyxl / pytest）
+pyproject.toml     UV 依赖入口（uv sync / uv.lock；保留 requirements.txt 作 pip 兜底）
+uv.lock            锁定的精确版本（由 uv lock 生成）
 core/config.py     目标域名、官网标识、页数、路径、浏览器参数
 core/db.py         SQLite 任务表（含 engines 列）+ 断点续跑 + 单平台重跑
 core/engine.py     Playwright 实例单例 + 浏览器会话（PC/移动）+ 验证码检测/等待
