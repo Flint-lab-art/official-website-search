@@ -729,6 +729,9 @@ thead th .arr{color:var(--accent);font-size:11px;}
 tbody td{padding:7px 10px;border-bottom:1px solid #ECEAE3;white-space:nowrap;}
 tbody tr:nth-child(even){background:rgba(0,0,0,.018);}
 tbody tr:hover{background:rgba(78,110,242,.07);}
+/* 跑过的行：当前勾选平台全部出结果 → 浅绿底 */
+tbody tr.done td{background:rgba(31,163,92,.06);}
+tbody tr.done:hover td{background:rgba(31,163,92,.10);}
 td.kw{max-width:280px;overflow:hidden;text-overflow:ellipsis;}
 .tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;}
 .t-hit{background:rgba(31,163,92,.12);color:var(--green);}
@@ -857,6 +860,34 @@ input[type=file]{display:none;}
     return s==="命中"?"t-hit":s==="未命中"?"t-none":s==="错误"?"t-error":
            s==="受限"?"t-restricted":s==="解析异常"?"t-malfunction":"t-pending";
   }
+  /* 勾选的平台 → 表格字段名（bd/bg/bm/gm） */
+  function checkedEngs(){
+    var r=[];
+    if(by("chkBaidu").checked)r.push("bd");
+    if(by("chkBing").checked)r.push("bg");
+    if(by("chkBm").checked)r.push("bm");
+    if(by("chkGm").checked)r.push("gm");
+    return r;
+  }
+  /* 该行是否算「跑过」：勾选的平台都有结果（非等待） */
+  function rowDone(t){
+    var e=checkedEngs();
+    if(!e.length)return false;
+    for(var i=0;i<e.length;i++){if(t[e[i]]==="等待")return false;}
+    return true;
+  }
+  /* 全局待跑：勾选平台中至少一个还是「等待」的关键词数 */
+  function calcLeft(tasks){
+    var e=checkedEngs();
+    if(!e.length)return "-";
+    var left=0;
+    for(var i=0;i<tasks.length;i++){
+      var t=tasks[i],ok=0;
+      for(var j=0;j<e.length;j++){if(t[e[j]]!=="等待")ok++;}
+      if(ok<e.length)left++;
+    }
+    return left;
+  }
   function esc(v){return v==null?"":String(v);}
   function render(){
     var h="";
@@ -869,9 +900,10 @@ input[type=file]{display:none;}
     });
     for(var i=0;i<arr.length;i++){
       var t=arr[i];
+      var isDone=rowDone(t);
       function cell(st,rank,page,eng,kw){return "<span class='tag "+tagCls(st)+"'>"+esc(st)+"</span>"+(rank?" <span style='color:var(--sub);font-size:12px'>#"+esc(rank)+" P"+esc(page)+"</span>":"")+" <a href='javascript:void(0)' onclick='retryEng("+JSON.stringify(kw)+","+JSON.stringify(eng)+")' title='单独重跑该平台' style='color:var(--accent);text-decoration:none;font-size:12px;'>↻</a>";}
       function shotLink(p){return p?"<a class='shot' href='/shots/"+encodeURIComponent(p.split(/[\\\\\\/]/).pop())+"' target='_blank'>查看</a>":"";}
-      h+="<tr><td class='kw' title='"+esc(t.kw)+"'>"+esc(t.kw)+"</td>"
+      h+="<tr"+(isDone?" class='done'":"")+"><td class='kw' title='"+esc(t.kw)+"'>"+esc(t.kw)+"</td>"
         +"<td>"+cell(t.bd,t.bd_rank,t.bd_page,"baidu",t.kw)+"</td>"
         +"<td>"+cell(t.bg,t.bg_rank,t.bg_page,"bing",t.kw)+"</td>"
         +"<td>"+cell(t.bm,t.bm_rank,t.bm_page,"baidu_m",t.kw)+"</td>"
@@ -892,7 +924,8 @@ input[type=file]{display:none;}
       var sig=JSON.stringify(s.tasks);
       if(sig!==lastTasks){lastTasks=sig;tbl=s.tasks;render();}
       by("stProg").textContent=s.done+" / "+s.total_kw;
-      by("stLeft").textContent=s.running?Math.max(s.total_kw-s.done,0):"--";
+      // 剩余 = 全局待跑关键词数（勾选平台中至少一个还没跑完的），常显
+      by("stLeft").textContent=(tbl.length?calcLeft(tbl):"--");
       if(s.running&&s.start_ts){
         var el=Date.now()/1000-s.start_ts;
         var per=el/Math.max(s.done,1);
@@ -946,6 +979,13 @@ input[type=file]{display:none;}
     var lim=by("inpLimit").value.trim();
     api("/api/start","POST",{limit:lim, engines:selEngines()}).then(function(r){if(r.error)alert(r.error);});
   };
+  // 勾选平台变化 → 重算行背景与待跑数（表格行是否「跑过」随勾选变化）
+  ["chkBaidu","chkBing","chkBm","chkGm"].forEach(function(id){
+    by(id).addEventListener("change",function(){
+      render();
+      by("stLeft").textContent=calcLeft(tbl);
+    });
+  });
   btn.pause.onclick=function(){api("/api/pause","POST");};
   btn.skip.onclick=function(){api("/api/skip","POST");};
   btn.stop.onclick=function(){api("/api/stop","POST");};
