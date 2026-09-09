@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """健康检查：真实浏览器验证各平台解析/判定逻辑仍有效（DOM 未改版）
 
 用法:
@@ -14,13 +13,14 @@
 
 退出码: 0 = 全部 PASS/WARN；1 = 存在 FAIL
 """
+
 import argparse
 import sys
 import time
 from urllib.parse import quote
 
 from core import config
-from core.engine import BrowserSession, stop_playwright, is_captcha, wait_for_captcha
+from core.engine import BrowserSession, is_captcha, stop_playwright, wait_for_captcha
 
 # 命中样本：应能解析出结果（百度/必应均有 Elo 相关内容）
 HIT_SAMPLES = ["医疗级触控显示器", "开架式触控显示器"]
@@ -45,7 +45,8 @@ def _wait_captcha(session, page, engine, kw, wait_s):
 
 
 def check_baidu(session, kw, wait_s):
-    from core.baidu import SEARCH_URL, _parse_page, _is_elo_official
+    from core.baidu import SEARCH_URL, _is_elo_official, _parse_page
+
     page = session.new_page()
     try:
         page.goto(SEARCH_URL.format(quote(kw)), timeout=60000, wait_until="domcontentloaded")
@@ -64,7 +65,8 @@ def check_baidu(session, kw, wait_s):
 
 
 def check_baidu_m(session, kw, wait_s):
-    from core.baidu_m import SEARCH_URL, _parse_page, _is_hit, _close_popups
+    from core.baidu_m import SEARCH_URL, _close_popups, _is_hit, _parse_page
+
     page = session.new_page()
     try:
         page.goto(SEARCH_URL.format(kw=quote(kw)), timeout=60000, wait_until="domcontentloaded")
@@ -95,7 +97,8 @@ def _bing_search_p1(page, kw):
 
 
 def check_bing(session, kw, wait_s):
-    from core.bing import _parse_page, _is_domain_hit, _is_restricted
+    from core.bing import _is_domain_hit, _is_restricted, _parse_page
+
     page = session.new_page()
     try:
         _bing_search_p1(page, kw)
@@ -113,7 +116,8 @@ def check_bing(session, kw, wait_s):
 
 
 def check_bing_m(session, kw, wait_s):
-    from core.bing_m import _parse_page, _is_restricted
+    from core.bing_m import _is_restricted, _parse_page
+
     page = session.new_page()
     try:
         _bing_search_p1(page, kw)
@@ -130,8 +134,12 @@ def check_bing_m(session, kw, wait_s):
         session.close_page(page)
 
 
-CHECKS = {"baidu": check_baidu, "bing": check_bing,
-          "baidu_m": check_baidu_m, "bing_m": check_bing_m}
+CHECKS = {
+    "baidu": check_baidu,
+    "bing": check_bing,
+    "baidu_m": check_baidu_m,
+    "bing_m": check_bing_m,
+}
 PLATFORM_LABEL = {"baidu": "百度PC", "bing": "必应PC", "baidu_m": "百度移动", "bing_m": "必应移动"}
 
 
@@ -161,7 +169,10 @@ def run_healthcheck(platforms, captcha_wait=120, log=print):
     fails = [r for r in all_results if r[2] == "FAIL"]
     warns = [r for r in all_results if r[2] == "WARN"]
     log("===== 汇总 =====")
-    log(f"  通过 {len(all_results) - len(fails) - len(warns)} ｜ 受限 {len(warns)} ｜ 失败 {len(fails)}")
+    log(
+        f"  通过 {len(all_results) - len(fails) - len(warns)} ｜ "
+        f"受限 {len(warns)} ｜ 失败 {len(fails)}"
+    )
     for eng, kw, st in fails:
         log(f"  FAIL {PLATFORM_LABEL[eng]} / {kw}")
     if fails:
@@ -175,15 +186,17 @@ def run_healthcheck(platforms, captcha_wait=120, log=print):
 
 def main():
     ap = argparse.ArgumentParser(description="官网检索器健康检查")
-    ap.add_argument("--platforms", default="baidu,bing",
-                    help="平台: baidu,bing,baidu_m,bing_m，逗号分隔或 all")
-    ap.add_argument("--captcha-wait", type=int, default=120,
-                    help="验证码人工等待秒数（默认 120）")
+    ap.add_argument(
+        "--platforms", default="baidu,bing", help="平台: baidu,bing,baidu_m,bing_m，逗号分隔或 all"
+    )
+    ap.add_argument("--captcha-wait", type=int, default=120, help="验证码人工等待秒数（默认 120）")
     args = ap.parse_args()
 
-    platforms = (["baidu", "bing", "baidu_m", "bing_m"]
-                 if args.platforms == "all" else
-                 [p.strip() for p in args.platforms.split(",") if p.strip()])
+    platforms = (
+        ["baidu", "bing", "baidu_m", "bing_m"]
+        if args.platforms == "all"
+        else [p.strip() for p in args.platforms.split(",") if p.strip()]
+    )
     unknown = [p for p in platforms if p not in CHECKS]
     if unknown:
         print(f"[ERROR] 未知平台: {unknown}")

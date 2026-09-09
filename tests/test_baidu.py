@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """百度 PC 官网标识判定测试"""
+
 from core.baidu import _is_elo_official
 
 

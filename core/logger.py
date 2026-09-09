@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
 """文件日志：面板级 INFO + 引擎级 DEBUG 都落盘到 logs/run_YYYYMMDD.log。
 面板日志（server.STATE.log）走 info；引擎内部关键过程走 debug，
 便于排查「页面实际状态 vs 判定结果」脱节的问题。"""
+
 import os
 import time
 

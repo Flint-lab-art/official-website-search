@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """必应域名命中判定测试"""
+
 from core.bing import _is_domain_hit
 
 

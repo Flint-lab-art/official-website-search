@@ -1,7 +1,11 @@
-# -*- coding: utf-8 -*-
 """浏览器会话管理：持久化用户目录（cookie 复用）+ 验证码人工处理"""
-import os, random, time, sys
-from playwright.sync_api import sync_playwright
+
+import contextlib
+import os
+import random
+import time
+
+from playwright.sync_api import BrowserContext, sync_playwright
 
 from . import config
 
@@ -21,14 +25,10 @@ def wait_render_ready(page, selector="li.b_algo"):
     """截图前等页面真实渲染完成。
     必应结果区为异步渲染：DOM 出现（可判定命中）≠ 已绘制，截图太早会白屏。
     等元素可见 + 网络空闲 + 短延时后返回。"""
-    try:
+    with contextlib.suppress(Exception):
         page.wait_for_selector(selector, state="visible", timeout=8000)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         page.wait_for_load_state("networkidle", timeout=8000)
-    except Exception:
-        pass
     page.wait_for_timeout(1200)
 
 
@@ -42,6 +42,7 @@ def is_captcha(page, engine):
         if "百度安全验证" in title or "安全验证" in title:
             return True
     return False
+
 
 def wait_for_captcha(page, engine, keyword, skip_evt=None, timeout_s=1800, notify=None):
     """出现验证码时暂停，提示用户手动完成。
@@ -73,16 +74,14 @@ def wait_for_captcha(page, engine, keyword, skip_evt=None, timeout_s=1800, notif
             waited = 0
             print("[验证码] 仍未完成，请在浏览器窗口继续操作…")
 
+
 def _clean_session_files(profile_dir):
     """清理 Chromium 上次异常退出残留的标签页会话文件（不影响 cookie/登录态）"""
-    import os
     for name in ("Current Session", "Last Session", "Current Tabs", "Last Tabs"):
         p = os.path.join(profile_dir, name)
         if os.path.exists(p):
-            try:
+            with contextlib.suppress(Exception):
                 os.remove(p)
-            except Exception:
-                pass
 
 
 _PW = None
@@ -99,10 +98,8 @@ def _pw_singleton():
 def stop_playwright():
     global _PW
     if _PW is not None:
-        try:
+        with contextlib.suppress(Exception):
             _PW.stop()
-        except Exception:
-            pass
         _PW = None
 
 
@@ -111,11 +108,11 @@ class BrowserSession:
         self._pw = _pw_singleton()
         profile = profile_dir or (config.MOBILE_PROFILE_DIR if mobile else config.PROFILE_DIR)
         _clean_session_files(profile)
-        kw = dict(
-            headless=False,                       # 必须显示窗口（用户人工验证）
-            locale="zh-CN",
-            args=["--start-maximized", "--disable-session-crashed-bubble", "--no-first-run"],
-        )
+        kw = {
+            "headless": False,  # 必须显示窗口（用户人工验证）
+            "locale": "zh-CN",
+            "args": ["--start-maximized", "--disable-session-crashed-bubble", "--no-first-run"],
+        }
         if mobile:
             kw["user_agent"] = config.MOBILE_USER_AGENT
             kw["viewport"] = config.MOBILE_VIEWPORT
@@ -125,7 +122,7 @@ class BrowserSession:
         else:
             kw["user_agent"] = config.USER_AGENT
             kw["viewport"] = config.VIEWPORT
-        self.ctx = self._pw.chromium.launch_persistent_context(profile, **kw)
+        self.ctx: BrowserContext = self._pw.chromium.launch_persistent_context(profile, **kw)
         # 注意：不能关闭启动自带的默认空白页——关掉最后一个标签页会导致整个浏览器窗口关闭，
         # 后续 new_page 会报 "Failed to open a new tab"。默认页由调用方复用（见 server.py）。
         self.pages = []
@@ -136,17 +133,13 @@ class BrowserSession:
         return pg
 
     def close_page(self, pg):
-        try:
+        with contextlib.suppress(Exception):
             pg.close()
-        except Exception:
-            pass
 
     def random_delay(self):
         time.sleep(random.randint(config.DELAY_MIN_MS, config.DELAY_MAX_MS) / 1000)
 
     def close(self):
-        try:
+        with contextlib.suppress(Exception):
             self.ctx.close()
-        except Exception:
-            pass
         # 不 stop 共享 _pw（由 stop_playwright() 统一收尾）

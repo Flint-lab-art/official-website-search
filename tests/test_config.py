@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """config 常量测试"""
+
 from core import config
 
 
@@ -12,8 +12,14 @@ def test_official_marks_cover_domain():
 
 
 def test_status_constants_distinct():
-    sts = {config.ST_PENDING, config.ST_HIT, config.ST_NONE,
-           config.ST_ERROR, config.ST_RESTRICTED, config.ST_MALFUNCTION}
+    sts = {
+        config.ST_PENDING,
+        config.ST_HIT,
+        config.ST_NONE,
+        config.ST_ERROR,
+        config.ST_RESTRICTED,
+        config.ST_MALFUNCTION,
+    }
     assert len(sts) == 6
 
 

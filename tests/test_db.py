@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """db.py 任务表/断点续跑/单平台重跑测试"""
+
 from core import db
 
 
@@ -7,7 +7,8 @@ def test_init_creates_table(tmp_path):
     conn = db.init_db(str(tmp_path / "t.db"))
     try:
         rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'").fetchall()
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'"
+        ).fetchall()
         assert len(rows) == 1
     finally:
         conn.close()
@@ -47,8 +48,7 @@ def test_update_result_excludes_finished_engine(tmp_path):
     conn = db.init_db(str(tmp_path / "t.db"))
     try:
         db.ensure_keywords(conn, ["词A"])
-        db.update_result(conn, "词A", "baidu", "hit", rank=2, page=1,
-                         evidence="x", shot="s.png")
+        db.update_result(conn, "词A", "baidu", "hit", rank=2, page=1, evidence="x", shot="s.png")
         pend = db.load_pending(conn)
         # baidu 已命中，只剩其余 3 平台
         assert pend == {"词A": ["bing", "baidu_m", "bing_m"]}

@@ -1,9 +1,9 @@
-# -*- coding: utf-8 -*-
 """挑出「第一页命中」的截图，归集到 Elo官网检索截图/第一页命中/ 并按平台分子文件夹。
 
 用法: python pick_p1_shots.py [数据库路径(默认 results.db)]
 客户需要「第一页就命中」的证据：只挑 page=1 且 status=hit 的截图。
 """
+
 import os
 import shutil
 import sys
@@ -20,6 +20,7 @@ ENGINES = [
     ("bing_m", "必应/MOB"),
 ]
 
+
 def main():
     db_path = sys.argv[1] if len(sys.argv) > 1 else config.DB_PATH
     conn = init_db(db_path)
@@ -31,7 +32,7 @@ def main():
     for eng, folder in ENGINES:
         col_st, col_pg, col_shot = f"{eng}_status", f"{eng}_page", f"{eng}_shot"
         cur = conn.execute(
-            f"SELECT keyword, {col_pg}, {col_shot} FROM tasks "
+            f"SELECT keyword, {col_pg}, {col_shot} FROM tasks "  # noqa: S608
             f"WHERE {col_st}='hit' AND {col_pg}=1 AND {col_shot} IS NOT NULL AND {col_shot} != ''"
         )
         dst_dir = os.path.join(base, folder)
@@ -59,11 +60,13 @@ def main():
     for folder, cnt in _group(rows):
         print(f"  {folder}: {cnt} 张")
 
+
 def _group(rows):
     d = {}
     for _, folder, _ in rows:
         d[folder] = d.get(folder, 0) + 1
     return sorted(d.items())
+
 
 if __name__ == "__main__":
     main()

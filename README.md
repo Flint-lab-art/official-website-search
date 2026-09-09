@@ -134,6 +134,21 @@ python healthcheck.py --captcha-wait 180  # CAPTCHA human-wait seconds (default 
 
 Covers: config constants, Baidu PC/mobile official-site mark detection, Bing domain detection, db task table/resume/per-platform retry. No browser dependency; finishes in seconds.
 
+## Code Quality
+
+```bash
+.\\.venv\\Scripts\\python -m ruff check .          # lint (Windows)
+.\\.venv\\Scripts\\python -m ruff format .         # format
+./.venv/bin/python -m ruff check .              # Linux / macOS
+./.venv/bin/python -m ruff format .
+
+.\\.venv\\Scripts\\python -m pyright core server.py main.py healthcheck.py pick_p1_shots.py   # type check
+
+.\\.venv\\Scripts\\python -m bandit -r core -c .bandit.yml -q   # security scan
+```
+
+All are dev dependencies (`uv sync` installs them). Rules live in `pyproject.toml` (`[tool.ruff.lint]`) and `.bandit.yml` (skipped items are pre-vetted false positives, documented there).
+
 ## Adapting for Another Brand (Forking)
 
 The detection rules are configured for an example brand. To monitor another brand, change 3 things:

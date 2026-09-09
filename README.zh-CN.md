@@ -134,6 +134,21 @@ python healthcheck.py --captcha-wait 180  # 验证码人工等待秒数（默认
 
 覆盖：配置常量、百度 PC/移动官网标识判定、必应域名判定、db 任务表/断点续跑/单平台重跑。无浏览器依赖，秒级跑完。
 
+## 代码质量
+
+```bash
+.\\.venv\\Scripts\\python -m ruff check .          # 规范检查（Windows）
+.\\.venv\\Scripts\\python -m ruff format .         # 格式化
+./.venv/bin/python -m ruff check .              # Linux / macOS
+./.venv/bin/python -m ruff format .
+
+.\\.venv\\Scripts\\python -m pyright core server.py main.py healthcheck.py pick_p1_shots.py   # 静态类型检查
+
+.\\.venv\\Scripts\\python -m bandit -r core -c .bandit.yml -q   # 安全扫描
+```
+
+均为 dev 依赖（`uv sync` 自动安装）。规则配置在 `pyproject.toml`（`[tool.ruff.lint]`）与 `.bandit.yml`（跳过项及误报原因已注释说明）。
+
 ## 适配其他品牌（Fork 使用）
 
 本工具默认按示例品牌配置判定口径，监控其他品牌只需改 3 处：

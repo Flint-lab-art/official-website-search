@@ -13,9 +13,43 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "bandit>=1.9.4",
+    "pyright>=1.1.411",
     "pytest>=7.0",
+    "ruff>=0.16.6",
 ]
 
 [tool.uv]
 # 纯脚本项目（非包）：只装依赖到 .venv，不构建项目本身
 package = false
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = [".venv", "logs", "dev", "results.db", "screenshots", "profile", "profile_mobile"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "SIM", "C4", "DTZ", "RUF", "S", "BLE"]
+# 爬虫/页面解析的健壮性写法：元素不存在/异常即跳过，属合理用法，不强改
+ignore = [
+    "S110",   # try-except-pass
+    "S112",   # try-except-continue
+    "BLE001", # 裸 Exception 捕获
+    "RUF001", # 中文注释/字符串里的“模糊 unicode”检测误报
+    "RUF002",
+    "RUF003",
+    "S311",   # random 用于随机延迟（防采集风控），非安全场景
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里 assert 是正常用法
+"tests/*.py" = ["S101"]
+# 入口脚本：先做 stdout/stderr 兜底再 import core（E402 是设计）；
+# server.py 内嵌 HTML/JS 模板（E501 超长行是字符串字面量，无法拆）；
+# sys.stdout=open(os.devnull) 必须保持打开（SIM115 误报）
+"server.py" = ["E402", "E501", "SIM115"]
+"main.py" = ["E402"]

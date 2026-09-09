@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """百度移动端官网标识判定测试"""
+
 from core.baidu_m import _is_hit
 
 

@@ -1,12 +1,19 @@
-# -*- coding: utf-8 -*-
 """官网检索器 Web 面板（本地服务 + 浏览器界面）
 启动: python server.py  → 自动打开 http://127.0.0.1:27531
 采集核心复用 core/（Playwright + SQLite + 判定），仅替换展示层。
 """
-import os, sys, io, json, queue, threading, time, sqlite3, webbrowser
+
+import contextlib
+import json
+import os
+import sqlite3
+import sys
+import threading
+import time
+import webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 # pythonw.exe 下 stdout/stderr 为 None，print 会崩溃——给哑对象兜底
 if sys.stdout is None:
@@ -16,25 +23,30 @@ if sys.stderr is None:
 
 for _s in (sys.stdout, sys.stderr):
     if hasattr(_s, "reconfigure"):
-        try:
-            _s.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            _s.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
-from core import config, db
-from core import logger
-from core.engine import BrowserSession, stop_playwright
+import contextlib
+
+from core import config, db, logger
 from core.baidu import run_baidu
-from core.bing import run_bing
 from core.baidu_m import run_baidu_m
+from core.bing import run_bing
 from core.bing_m import run_bing_m
+from core.engine import BrowserSession, stop_playwright
 
 PORT = 27531
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FAVICON = os.path.join(BASE_DIR, "favicon.png")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
-ST_LABEL = {"pending": "等待", "hit": "命中", "none": "未命中", "error": "错误",
-            "restricted": "受限", "malfunction": "解析异常"}
+ST_LABEL = {
+    "pending": "等待",
+    "hit": "命中",
+    "none": "未命中",
+    "error": "错误",
+    "restricted": "受限",
+    "malfunction": "解析异常",
+}
 ENG_LABEL = {"baidu": "百度PC", "bing": "必应PC", "baidu_m": "百度移动", "bing_m": "必应移动"}
 
 
@@ -42,21 +54,30 @@ def _append_log_file(line):
     """面板日志落盘：统一走 core.logger（logs/run_YYYYMMDD.log）"""
     logger.info(line)
 
+
 # 导出可选列：(id, 表头, 行索引, 类型, 列宽)
 # 类型: raw=直取, st=状态转标签, shot=截图(文件名+超链接), concl=结论, kw=关键词
 EXPORT_COLS = [
     ("kw", "关键词", 0, "kw", 30),
-    ("bd", "百度PC状态", 1, "st", 12), ("bd_rank", "百度PC排名", 2, "raw", 10),
-    ("bd_page", "百度PC页码", 3, "raw", 10), ("bd_ev", "百度PC依据", 4, "raw", 80),
+    ("bd", "百度PC状态", 1, "st", 12),
+    ("bd_rank", "百度PC排名", 2, "raw", 10),
+    ("bd_page", "百度PC页码", 3, "raw", 10),
+    ("bd_ev", "百度PC依据", 4, "raw", 80),
     ("bd_shot", "百度PC截图", 5, "shot", 60),
-    ("bg", "必应PC状态", 6, "st", 12), ("bg_rank", "必应PC排名", 7, "raw", 10),
-    ("bg_page", "必应PC页码", 8, "raw", 10), ("bg_ev", "必应PC依据", 9, "raw", 80),
+    ("bg", "必应PC状态", 6, "st", 12),
+    ("bg_rank", "必应PC排名", 7, "raw", 10),
+    ("bg_page", "必应PC页码", 8, "raw", 10),
+    ("bg_ev", "必应PC依据", 9, "raw", 80),
     ("bg_shot", "必应PC截图", 10, "shot", 60),
-    ("bm", "百度移动状态", 11, "st", 12), ("bm_rank", "百度移动排名", 12, "raw", 10),
-    ("bm_page", "百度移动页码", 13, "raw", 10), ("bm_ev", "百度移动依据", 14, "raw", 80),
+    ("bm", "百度移动状态", 11, "st", 12),
+    ("bm_rank", "百度移动排名", 12, "raw", 10),
+    ("bm_page", "百度移动页码", 13, "raw", 10),
+    ("bm_ev", "百度移动依据", 14, "raw", 80),
     ("bm_shot", "百度移动截图", 15, "shot", 60),
-    ("gm", "必应移动状态", 16, "st", 12), ("gm_rank", "必应移动排名", 17, "raw", 10),
-    ("gm_page", "必应移动页码", 18, "raw", 10), ("gm_ev", "必应移动依据", 19, "raw", 80),
+    ("gm", "必应移动状态", 16, "st", 12),
+    ("gm_rank", "必应移动排名", 17, "raw", 10),
+    ("gm_page", "必应移动页码", 18, "raw", 10),
+    ("gm_ev", "必应移动依据", 19, "raw", 80),
     ("gm_shot", "必应移动截图", 20, "shot", 60),
     ("concl", "结论", None, "concl", 16),
     ("upd", "更新时间", 21, "raw", 45),
@@ -77,6 +98,11 @@ def conclusion(*st):
 
 # ================= 状态与日志 =================
 class State:
+    worker: "Worker | None"
+    healthcheck: "threading.Thread | None"
+    current: "tuple[str, str] | None"
+    captcha: "tuple[str, str] | None"
+
     def __init__(self):
         self.lock = threading.Lock()
         self.worker = None
@@ -84,11 +110,11 @@ class State:
         self.pause_evt = threading.Event()
         self.stop_evt = threading.Event()
         self.skip_evt = threading.Event()
-        self.current = None      # (kw, engine)
-        self.captcha = None      # (engine, kw)
-        self.start_ts = None     # 本次任务开始时刻（time.time），用于计时
-        self.done = 0            # 已处理完的关键词数
-        self.total_kw = 0        # 本次任务关键词总数
+        self.current = None  # (kw, engine)
+        self.captcha = None  # (engine, kw)
+        self.start_ts: float | None = None  # 本次任务开始时刻（time.time），用于计时
+        self.done = 0  # 已处理完的关键词数
+        self.total_kw = 0  # 本次任务关键词总数
         self.logs = deque(maxlen=800)
 
     def log(self, text):
@@ -107,8 +133,8 @@ STATE = State()
 
 
 # ================= 采集 Worker =================
-RUNNERS = {"baidu": run_baidu, "bing": run_bing,
-           "baidu_m": run_baidu_m, "bing_m": run_bing_m}
+RUNNERS = {"baidu": run_baidu, "bing": run_bing, "baidu_m": run_baidu_m, "bing_m": run_bing_m}
+
 
 class Worker(threading.Thread):
     def __init__(self, pending):
@@ -136,7 +162,8 @@ class Worker(threading.Thread):
             engs_needed.update(engs)
         need_pc = bool(engs_needed & {"baidu", "bing"})
         need_m = bool(engs_needed & {"baidu_m", "bing_m"})
-        session = m_session = None
+        session: BrowserSession | None = None
+        m_session: BrowserSession | None = None
         try:
             if need_pc:
                 STATE.log("启动浏览器（PC 版）…")
@@ -148,7 +175,12 @@ class Worker(threading.Thread):
                 STATE.log("移动浏览器已就绪")
             if not need_pc and not need_m:
                 with STATE.lock:
-                    STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = None, None, None, None
+                    STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = (
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
                 return
         except Exception as e:
             STATE.log(f"!! 浏览器启动失败: {e}")
@@ -188,6 +220,8 @@ class Worker(threading.Thread):
                         STATE.current, STATE.captcha = (kw, ENG_LABEL[eng]), None
                     STATE.log(f"▶ {kw} [{ENG_LABEL[eng]}]")
                     sess = session if eng in ("baidu", "bing") else m_session
+                    if sess is None:
+                        raise RuntimeError("浏览器会话未初始化")
                     if eng not in pages:
                         # 懒开标签：优先复用浏览器启动自带的默认空白页（导航到目标平台），
                         # 没有再新建——避免窗口出现多余空白标签，也避免关默认页导致窗口关闭
@@ -198,21 +232,37 @@ class Worker(threading.Thread):
                                 break
                         pages[eng] = reused if reused is not None else sess.new_page()
                     if eng in ("baidu", "baidu_m"):
-                        r = func(sess, kw, config.SCREENSHOT_DIR,
-                                 skip_evt=STATE.skip_evt, notify=self.notify_captcha,
-                                 page=pages[eng], on_page=self.on_page)
+                        r = func(
+                            sess,
+                            kw,
+                            config.SCREENSHOT_DIR,
+                            skip_evt=STATE.skip_evt,
+                            notify=self.notify_captcha,
+                            page=pages[eng],
+                            on_page=self.on_page,
+                        )
                     else:
-                        r = func(sess, kw, config.SCREENSHOT_DIR,
-                                 page=pages[eng], on_page=self.on_page)
-                    db.update_result(conn, kw, eng, r["status"],
-                                     r.get("rank"), r.get("page"),
-                                     r.get("evidence"), r.get("shot"))
-                    STATE.log(f"   {ENG_LABEL[eng]} {ST_LABEL.get(r['status'], r['status'])} "
-                              f"排名{r.get('rank')} 第{r.get('page')}页 | {r.get('evidence', '')[:50]}")
+                        r = func(
+                            sess, kw, config.SCREENSHOT_DIR, page=pages[eng], on_page=self.on_page
+                        )
+                    db.update_result(
+                        conn,
+                        kw,
+                        eng,
+                        r["status"],
+                        r.get("rank"),
+                        r.get("page"),
+                        r.get("evidence"),
+                        r.get("shot"),
+                    )
+                    STATE.log(
+                        f"   {ENG_LABEL[eng]} {ST_LABEL.get(r['status'], r['status'])} "
+                        f"排名{r.get('rank')} 第{r.get('page')}页 | {r.get('evidence', '')[:50]}"
+                    )
                     if STATE.skip_evt.is_set():
                         STATE.skip_evt.clear()
                         db.update_result(conn, kw, eng, "error", evidence="验证码跳过")
-                        STATE.log(f"   已跳过（验证码）")
+                        STATE.log("   已跳过（验证码）")
                         break
 
                 done += 1
@@ -232,8 +282,10 @@ class Worker(threading.Thread):
             with STATE.lock:
                 STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = None, None, None, None
         s = db.summary(conn)
-        STATE.log(f"===== 完成：百度PC命中 {s['baidu_hit']}/{s['total']}，必应PC命中 {s['bing_hit']}/{s['total']}，"
-                  f"百度移动命中 {s['baidu_m_hit']}/{s['total']}，必应移动命中 {s['bing_m_hit']}/{s['total']} =====")
+        STATE.log(
+            f"===== 完成：百度PC命中 {s['baidu_hit']}/{s['total']}，必应PC命中 {s['bing_hit']}/{s['total']}，"
+            f"百度移动命中 {s['baidu_m_hit']}/{s['total']}，必应移动命中 {s['bing_m_hit']}/{s['total']} ====="
+        )
 
 
 # ================= HTTP 服务 =================
@@ -244,7 +296,8 @@ def _db_rows():
         "baidu_shot, bing_shot, "
         "baidu_m_status, baidu_m_rank, baidu_m_page, baidu_m_shot, "
         "bing_m_status, bing_m_rank, bing_m_page, bing_m_shot "
-        "FROM tasks ORDER BY id").fetchall()
+        "FROM tasks ORDER BY id"
+    ).fetchall()
     conn.close()
     return rows
 
@@ -253,18 +306,28 @@ def _api_state():
     rows = _db_rows()
     tasks = []
     for kw, bs, br, bp, gs, gr, gp, bsh, gsh, bms, bmr, bmp, bmsh, gms, gmr, gmp, gmsh in rows:
-        tasks.append({
-            "kw": kw,
-            "bd": ST_LABEL.get(bs, bs), "bd_rank": br, "bd_page": bp,
-            "bg": ST_LABEL.get(gs, gs), "bg_rank": gr, "bg_page": gp,
-            "bm": ST_LABEL.get(bms, bms), "bm_rank": bmr, "bm_page": bmp,
-            "gm": ST_LABEL.get(gms, gms), "gm_rank": gmr, "gm_page": gmp,
-            "concl": conclusion(bs, gs, bms, gms),
-            "shot_bd": bsh if (bs == "hit" and bsh) else "",
-            "shot_bg": gsh if (gs == "hit" and gsh) else "",
-            "shot_bm": bmsh if (bms == "hit" and bmsh) else "",
-            "shot_gm": gmsh if (gms == "hit" and gmsh) else "",
-        })
+        tasks.append(
+            {
+                "kw": kw,
+                "bd": ST_LABEL.get(bs, bs),
+                "bd_rank": br,
+                "bd_page": bp,
+                "bg": ST_LABEL.get(gs, gs),
+                "bg_rank": gr,
+                "bg_page": gp,
+                "bm": ST_LABEL.get(bms, bms),
+                "bm_rank": bmr,
+                "bm_page": bmp,
+                "gm": ST_LABEL.get(gms, gms),
+                "gm_rank": gmr,
+                "gm_page": gmp,
+                "concl": conclusion(bs, gs, bms, gms),
+                "shot_bd": bsh if (bs == "hit" and bsh) else "",
+                "shot_bg": gsh if (gs == "hit" and gsh) else "",
+                "shot_bm": bmsh if (bms == "hit" and bmsh) else "",
+                "shot_gm": gmsh if (gms == "hit" and gmsh) else "",
+            }
+        )
     hits = [0, 0, 0, 0]
     for t in tasks:
         if t["bd"] == "命中":
@@ -284,9 +347,13 @@ def _api_state():
         done = STATE.done
         total_kw = STATE.total_kw
     return {
-        "running": running, "paused": paused,
-        "current": current, "captcha": captcha,
-        "start_ts": start_ts, "done": done, "total_kw": total_kw,
+        "running": running,
+        "paused": paused,
+        "current": current,
+        "captcha": captcha,
+        "start_ts": start_ts,
+        "done": done,
+        "total_kw": total_kw,
         "total": len(tasks),
         "hits": hits,
         "tasks": tasks,
@@ -295,21 +362,20 @@ def _api_state():
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
+    def log_message(self, format, *args):
         # 非 200 响应打印到 stderr 便于排查
         if args and args[0] != "200":
-            sys.stderr.write(f"[http] {fmt % args}\n")
+            sys.stderr.write(f"[http] {format % args}\n")
 
     def _handle(self, fn):
         try:
             return fn()
         except Exception as e:
             import traceback
+
             traceback.print_exc()
-            try:
+            with contextlib.suppress(Exception):
                 self._send_json({"error": f"服务端异常: {e}"}, 500)
-            except Exception:
-                pass
 
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -341,10 +407,12 @@ class Handler(BaseHTTPRequestHandler):
         """健康检查线程：跑 run_healthcheck，进度写入日志区"""
         try:
             from healthcheck import run_healthcheck
+
             run_healthcheck(["baidu", "bing"], captcha_wait=120, log=STATE.log)
             STATE.log("健康检查完成")
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             STATE.log(f"健康检查异常: {e}")
         finally:
@@ -353,6 +421,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         return self._handle(self._do_GET)
+
     def _do_GET(self):
         path = urlparse(self.path).path
         if path == "/":
@@ -368,7 +437,7 @@ class Handler(BaseHTTPRequestHandler):
             cols = parse_qs(qs).get("cols", [""])[0] if qs else ""
             return self._export_xlsx(cols or None)
         if path.startswith("/shots/"):
-            return self._serve_shot(path[len("/shots/"):])
+            return self._serve_shot(path[len("/shots/") :])
         self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -387,11 +456,18 @@ class Handler(BaseHTTPRequestHandler):
             if not pending:
                 return self._send_json({"error": "没有待处理关键词"})
             # 按勾选的平台过滤（取消勾选的平台本次不跑，也不开对应浏览器窗口）
-            want = [str(e).strip() for e in (data.get("engines") or []) if str(e).strip() in db.ALL_ENGINES]
+            want = [
+                str(e).strip()
+                for e in (data.get("engines") or [])
+                if str(e).strip() in db.ALL_ENGINES
+            ]
             if want:
                 ws = set(want)
-                pending = {kw: [e for e in engs if e in ws]
-                           for kw, engs in pending.items() if any(e in ws for e in engs)}
+                pending = {
+                    kw: [e for e in engs if e in ws]
+                    for kw, engs in pending.items()
+                    if any(e in ws for e in engs)
+                }
                 if not pending:
                     return self._send_json({"error": "勾选平台下没有待处理关键词"})
             # 本次上限：填了数字就只跑前 N 个关键词，剩余保持等待、下次可续跑
@@ -486,6 +562,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font
+
             # 列选择：None/空 = 全选
             if not cols_ids:
                 selected = EXPORT_COLS
@@ -499,14 +576,21 @@ class Handler(BaseHTTPRequestHandler):
                 "bing_status, bing_rank, bing_page, bing_evidence, bing_shot, "
                 "baidu_m_status, baidu_m_rank, baidu_m_page, baidu_m_evidence, baidu_m_shot, "
                 "bing_m_status, bing_m_rank, bing_m_page, bing_m_evidence, bing_m_shot, "
-                "updated_at FROM tasks ORDER BY id").fetchall()
+                "updated_at FROM tasks ORDER BY id"
+            ).fetchall()
             conn.close()
             wb = Workbook()
-            wb.remove(wb.active)
+            ws0 = wb.active
+            if ws0 is not None:
+                wb.remove(ws0)
 
             def _engine_of(cid):
-                for pre, name in (("bd", "百度PC"), ("bg", "必应PC"),
-                                  ("bm", "百度移动"), ("gm", "必应移动")):
+                for pre, name in (
+                    ("bd", "百度PC"),
+                    ("bg", "必应PC"),
+                    ("bm", "百度移动"),
+                    ("gm", "必应移动"),
+                ):
                     if cid == pre or cid.startswith(pre + "_"):
                         return name
                 return None
@@ -529,14 +613,20 @@ class Handler(BaseHTTPRequestHandler):
                 eng = _engine_of(c[0])
                 if eng:
                     groups.setdefault(eng, []).append(c)
-            from openpyxl.styles import PatternFill, Font as XFont, Border, Side, Alignment
+            from openpyxl.styles import Alignment, Border, PatternFill, Side
+            from openpyxl.styles import Font as XFont
+
             HEAD_FILL = PatternFill("solid", fgColor="4F6EF2")
             HEAD_FONT = XFont(color="FFFFFF", bold=True, size=11)
             THIN = Side(style="thin", color="D9D9D9")
             BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-            ST_FILL = {"hit": ("C6EFCE", "006100"), "none": ("F2F2F2", "808080"),
-                       "error": ("FFC7CE", "9C0006"), "restricted": ("FFEB9C", "9C6500"),
-                       "malfunction": ("E3DFF2", "5B4B8A")}
+            ST_FILL = {
+                "hit": ("C6EFCE", "006100"),
+                "none": ("F2F2F2", "808080"),
+                "error": ("FFC7CE", "9C0006"),
+                "restricted": ("FFEB9C", "9C6500"),
+                "malfunction": ("E3DFF2", "5B4B8A"),
+            }
             REV_LABEL = {v: k for k, v in ST_LABEL.items()}
 
             def _style_head(wsx, ncol):
@@ -593,8 +683,16 @@ class Handler(BaseHTTPRequestHandler):
             g_hit = sum(1 for r in rows if r[6] == "hit")
             bm_hit = sum(1 for r in rows if r[11] == "hit")
             gm_hit = sum(1 for r in rows if r[16] == "hit")
-            any_hit = sum(1 for r in rows if r[1] == "hit" or r[6] == "hit" or r[11] == "hit" or r[16] == "hit")
-            none = [r[0] for r in rows if r[1] == "none" and r[6] == "none" and r[11] == "none" and r[16] == "none"]
+            any_hit = sum(
+                1
+                for r in rows
+                if r[1] == "hit" or r[6] == "hit" or r[11] == "hit" or r[16] == "hit"
+            )
+            none = [
+                r[0]
+                for r in rows
+                if r[1] == "none" and r[6] == "none" and r[11] == "none" and r[16] == "none"
+            ]
             err = [r[0] for r in rows if "error" in (r[1], r[6], r[11], r[16])]
             if extra:
                 ws2.append(head2)
@@ -602,17 +700,23 @@ class Handler(BaseHTTPRequestHandler):
                     c.font = Font(bold=True)
                 for r in rows:
                     ws2.append([_val(r, c) for c in extra])
-            stat = [["指标", "数值"], ["关键词总数", total], ["百度PC官网标识命中", b_hit],
-                    ["必应PC域名命中", g_hit], ["百度移动官网标识命中", bm_hit],
-                    ["必应移动域名命中", gm_hit], ["四引擎任一命中", any_hit],
-                    ["四引擎均未命中（10页内未见）", len(none)],
-                    ["含错误（验证码跳过等）", len(err)], [],
-                    ["四引擎均未命中关键词", "、".join(none) if none else "无"],
-                    ["含错误关键词", "、".join(err) if err else "无"]]
+            stat = [
+                ["指标", "数值"],
+                ["关键词总数", total],
+                ["百度PC官网标识命中", b_hit],
+                ["必应PC域名命中", g_hit],
+                ["百度移动官网标识命中", bm_hit],
+                ["必应移动域名命中", gm_hit],
+                ["四引擎任一命中", any_hit],
+                ["四引擎均未命中（10页内未见）", len(none)],
+                ["含错误（验证码跳过等）", len(err)],
+                [],
+                ["四引擎均未命中关键词", "、".join(none) if none else "无"],
+                ["含错误关键词", "、".join(err) if err else "无"],
+            ]
             for row in stat:
                 ws2.append(row)
             # 汇总样式：表头深底白字，统计区加粗+边框
-            head_row = 1 if extra else None
             if extra:
                 _style_head(ws2, len(head2))
                 for r_ in range(2, 2 + len(rows)):
@@ -627,14 +731,14 @@ class Handler(BaseHTTPRequestHandler):
                 for i in range(1, 3):
                     c = ws2.cell(row=r_, column=i)
                     c.border = BORDER
-                    c.alignment = Alignment(vertical="center", horizontal="left" if i == 1 else "left")
+                    c.alignment = Alignment(vertical="center", horizontal="left")
                 ws2.cell(row=r_, column=1).font = XFont(bold=True)
             # 全部 sheet 按内容自动列宽（中文 2 字符，英文 1，上限防超宽）
             for wsx in wb.worksheets:
                 cap = 80 if wsx.title == "汇总" else 60
                 for col_cells in wsx.columns:
                     mx = 0
-                    letter = col_cells[0].column_letter
+                    letter = getattr(col_cells[0], "column_letter", "A")
                     for cell in col_cells:
                         if cell.value is None:
                             continue
@@ -645,15 +749,20 @@ class Handler(BaseHTTPRequestHandler):
             if "汇总" in wb.sheetnames and wb.sheetnames[0] != "汇总":
                 wb.move_sheet("汇总", offset=-len(wb.sheetnames) + 1)
             import io as _io
+
             buf = _io.BytesIO()
             wb.save(buf)
             body = buf.getvalue()
             self.send_response(200)
-            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header(
+                "Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
             from urllib.parse import quote as _quote
+
             fn = _quote("官网检索结果.xlsx")
-            self.send_header("Content-Disposition",
-                             f"attachment; filename=result.xlsx; filename*=UTF-8''{fn}")
+            self.send_header(
+                "Content-Disposition", f"attachment; filename=result.xlsx; filename*=UTF-8''{fn}"
+            )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -675,6 +784,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_shot(self, name):
         import glob as _glob
+
         name = os.path.basename(unquote(name))
         hits = _glob.glob(os.path.join(config.SCREENSHOT_DIR, "**", name), recursive=True)
         if not hits or not os.path.isfile(hits[0]):
