@@ -313,6 +313,14 @@ class BrowserSession:
         self.pages.append(pg)
         return pg
 
+    def ensure_cookie_size(self):
+        """任务开始前调用：Cookie 体积超限时自动裁剪（保留核心身份、丢追踪域）。
+        正常情况零成本；避免 header 超限被搜索引擎拒绝，减少「只能重启清 Cookie」的场景。"""
+        from .cookie_tools import ensure_cookie_size as _ensure
+
+        with contextlib.suppress(Exception):
+            _ensure(self.ctx)
+
     def close_page(self, pg):
         with contextlib.suppress(Exception):
             pg.close()

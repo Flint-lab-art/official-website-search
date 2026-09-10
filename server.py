@@ -186,6 +186,7 @@ class Worker(threading.Thread):
         sess = session if eng in ("baidu", "bing") else m_session
         if sess is None:
             raise RuntimeError("浏览器会话未初始化")
+        sess.ensure_cookie_size()  # Cookie 超限自动裁剪，防 header 超限被引擎拒绝
         if eng in ("baidu", "baidu_m"):
             r = func(
                 sess,
@@ -226,6 +227,7 @@ class Worker(threading.Thread):
         with STATE.lock:
             STATE.current, STATE.captcha = (kw, ENG_LABEL[eng]), None
         STATE.log(f"▶ {kw} [{ENG_LABEL[eng]}]")
+        sess.ensure_cookie_size()  # Cookie 超限自动裁剪（并行模式每平台独立会话同样适用）
         func = RUNNERS[eng]
         if eng in ("baidu", "baidu_m"):
             r = func(
