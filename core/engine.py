@@ -34,6 +34,160 @@ def wait_render_ready(page, selector="li.b_algo"):
     page.wait_for_timeout(1200)
 
 
+def wait_page_stable(page, stable_ms=300, timeout_ms=12000):
+    """等页面渲染稳定：li.b_algo 数量与页面总高度在 stable_ms 内不再变化。
+    Bing 结果流式注入，DOM 出现 ≠ 渲染完；数量/高度稳定后才可截图。"""
+    t0 = time.time()
+    last = None
+    while time.time() - t0 < timeout_ms:
+        try:
+            n = page.evaluate("document.querySelectorAll('li.b_algo').length")
+            h = page.evaluate("document.documentElement.scrollHeight")
+        except Exception:
+            return False
+        cur = (n, h)
+        if cur == last and n > 0:
+            page.wait_for_timeout(stable_ms)
+            try:
+                n2 = page.evaluate("document.querySelectorAll('li.b_algo').length")
+                h2 = page.evaluate("document.documentElement.scrollHeight")
+            except Exception:
+                return False
+            if (n2, h2) == cur:
+                return True
+        last = cur
+        page.wait_for_timeout(200)
+    return False
+
+
+def kill_content_visibility(page):
+    """只处理 content-visibility:auto 的元素：强制 visible + contain:none。
+    这是必应页码条/视口外模块「只留占位不渲染」的唯一根因处理。
+    不做全文档 visibility/display/opacity 兜底——否则会把必应隐藏元素
+    （如屏幕阅读器专用的 h4.b_hide「分页」标题、功能提示条）误显示进截图。"""
+    with contextlib.suppress(Exception):
+        page.evaluate(
+            """() => {
+                document.querySelectorAll('*').forEach(el => {
+                    if (getComputedStyle(el).contentVisibility === 'auto') {
+                        el.style.contentVisibility = 'visible';
+                        el.style.contain = 'none';
+                    }
+                });
+            }"""
+        )
+        page.wait_for_timeout(150)
+
+
+def disable_animations_and_unstick(page):
+    """注入 CSS：fixed/sticky 转 static（避免整页截图里重复绘制或只画在顶部）
+    + 禁用 transition/animation（避免截到中间帧）。"""
+    with contextlib.suppress(Exception):
+        page.add_style_tag(content="""
+            *[style*="position: fixed"],
+            *[style*="position: sticky"],
+            header, #b_header, .b_header, #sb_form_contain, #b_sydTiger {
+                position: static !important;
+            }
+            * { transition: none !important; animation: none !important; }
+        """)
+
+
+def warm_up(page):
+    """滚到底触发懒加载，再回顶。"""
+    with contextlib.suppress(Exception):
+        page.evaluate(
+            """async () => {
+                const d = ms => new Promise(r => setTimeout(r, ms));
+                const total = () => Math.max(
+                    document.body.scrollHeight, document.documentElement.scrollHeight);
+                let y = 0;
+                while (y < total()) {
+                    window.scrollTo(0, y); await d(120);
+                    y += window.innerHeight * 0.8;
+                }
+                window.scrollTo(0, total()); await d(300);
+                window.scrollTo(0, 0); await d(150);
+            }"""
+        )
+
+
+def wait_resources(page):
+    """等所有图片加载完成 + 字体就绪 + 双 rAF（确保绘制提交到合成器帧）。"""
+    with contextlib.suppress(Exception):
+        page.evaluate(
+            """() => Promise.all(Array.from(document.images).map(i =>
+                i.complete ? Promise.resolve() : new Promise(r => { i.onload = i.onerror = r; })
+            ))"""
+        )
+    with contextlib.suppress(Exception):
+        page.evaluate("() => document.fonts.ready.then(() => true)")
+    with contextlib.suppress(Exception):
+        page.evaluate(
+            "() => new Promise(r => requestAnimationFrame("
+            "() => requestAnimationFrame(() => r(true))))"
+        )
+    page.wait_for_timeout(150)
+
+
+def cdp_full_screenshot(page, path, max_height=16000):
+    """CDP captureBeyondViewport 整页截图；超过单张上限（约 16384）时分段拼接。
+    与 page.screenshot(full_page=True) 相比，clip 坐标/视口解释更稳定。"""
+    import base64
+    import io
+
+    m = page.evaluate(
+        """() => {
+            const b = document.body, e = document.documentElement;
+            return {
+                width:  Math.max(b.scrollWidth,  e.scrollWidth,  window.innerWidth),
+                height: Math.max(b.scrollHeight, e.scrollHeight, window.innerHeight)
+            };
+        }"""
+    )
+    # 截图前强制合成器提交最新帧（偶发空白：fromSurface 抓到未提交的表面）
+    with contextlib.suppress(Exception):
+        page.evaluate(
+            "() => new Promise(r => requestAnimationFrame("
+            "() => requestAnimationFrame(() => r(true))))"
+        )
+    page.wait_for_timeout(250)
+
+    cdp = page.context.new_cdp_session(page)
+    try:
+
+        def _shot(y, h):
+            return cdp.send(
+                "Page.captureScreenshot",
+                {
+                    "format": "png",
+                    "captureBeyondViewport": True,
+                    "fromSurface": True,
+                    "clip": {"x": 0, "y": y, "width": m["width"], "height": h, "scale": 1},
+                },
+            )["data"]
+
+        if m["height"] <= max_height:
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(_shot(0, m["height"])))
+        else:
+            from PIL import Image
+
+            parts, y = [], 0
+            while y < m["height"]:
+                h = min(max_height, m["height"] - y)
+                parts.append(Image.open(io.BytesIO(base64.b64decode(_shot(y, h)))))
+                y += h
+            canvas = Image.new("RGB", (parts[0].width, sum(p.height for p in parts)), "white")
+            off = 0
+            for p in parts:
+                canvas.paste(p, (0, off))
+                off += p.height
+            canvas.save(path)
+    finally:
+        cdp.detach()
+
+
 def is_captcha(page, engine):
     """判断当前页是否为验证码页"""
     url = page.url

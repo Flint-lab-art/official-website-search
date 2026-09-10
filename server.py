@@ -334,16 +334,9 @@ class Worker(threading.Thread):
                     return
             except Exception as e:
                 STATE.log(f"!! 浏览器启动失败: {e}")
-            try:
-                if session:
-                    session.close()
-                if m_session:
-                    m_session.close()
-            except Exception:
-                pass
-            with STATE.lock:
-                STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = None, None, None, None
-            return
+                with STATE.lock:
+                    STATE.worker, STATE.current, STATE.captcha, STATE.start_ts = None, None, None, None
+                return
         pages = {}
         # 标签页懒开：用到哪个平台才 new_page，避免启动时预开一堆空白标签
         done = 0
