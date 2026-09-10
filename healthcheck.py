@@ -152,19 +152,23 @@ def run_healthcheck(platforms, captcha_wait=120, log=print):
     log(f"样本词: {', '.join(samples)}（验证码可人工在窗口完成）")
 
     all_results = []
-    for eng in platforms:
-        log(f"===== {PLATFORM_LABEL[eng]} =====")
-        session = BrowserSession(mobile=eng.endswith("_m"))
-        try:
-            for kw in samples:
-                st, msg = CHECKS[eng](session, kw, captcha_wait)
-                all_results.append((eng, kw, st, msg))
-                mark = {"PASS": "  OK", "WARN": " WARN", "FAIL": " FAIL"}[st]
-                log(f"  {mark}  {kw:<12} {msg}")
-                time.sleep(1)  # 词与词之间缓一下
-        finally:
-            session.close()
-    stop_playwright()
+    try:
+        for eng in platforms:
+            log(f"===== {PLATFORM_LABEL[eng]} =====")
+            session = BrowserSession(mobile=eng.endswith("_m"))
+            try:
+                for kw in samples:
+                    st, msg = CHECKS[eng](session, kw, captcha_wait)
+                    all_results.append((eng, kw, st, msg))
+                    mark = {"PASS": "  OK", "WARN": " WARN", "FAIL": " FAIL"}[st]
+                    log(f"  {mark}  {kw:<12} {msg}")
+                    time.sleep(1)  # 词与词之间缓一下
+            finally:
+                session.close()
+    finally:
+        # 必须清理共享 playwright 实例：它是绑定健康检查线程创建的，
+        # 不清理会导致下次任务复用已退出线程的实例而崩溃
+        stop_playwright()
 
     fails = [r for r in all_results if r[2] == "FAIL"]
     warns = [r for r in all_results if r[2] == "WARN"]

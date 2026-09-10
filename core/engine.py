@@ -4,6 +4,7 @@ import contextlib
 import os
 import random
 import shutil
+import threading
 import time
 
 from playwright.sync_api import BrowserContext, sync_playwright
@@ -86,22 +87,31 @@ def _clean_session_files(profile_dir):
 
 
 _PW = None
+_PW_TID = None
 
 
 def _pw_singleton():
-    """Playwright 实例单例：Sync API 同一线程只能 start 一次，多个浏览器共享一个实例"""
-    global _PW
+    """Playwright 实例单例：Sync API 绑定创建线程，跨线程使用会崩。
+    若实例由其他线程（如已退出的健康检查线程）创建，自动废弃重建。"""
+    global _PW, _PW_TID
+    tid = threading.get_ident()
+    if _PW is not None and tid != _PW_TID:
+        with contextlib.suppress(Exception):
+            _PW.stop()
+        _PW = None
     if _PW is None:
         _PW = sync_playwright().start()
+        _PW_TID = tid
     return _PW
 
 
 def stop_playwright():
-    global _PW
+    global _PW, _PW_TID
     if _PW is not None:
         with contextlib.suppress(Exception):
             _PW.stop()
         _PW = None
+        _PW_TID = None
 
 
 def par_profile_dir(eng):

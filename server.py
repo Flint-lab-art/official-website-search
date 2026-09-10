@@ -155,9 +155,11 @@ class Worker(threading.Thread):
     def on_page(self, keyword, engine, pn, count=None):
         """每个关键词翻到第几页时实时写日志；count 为解析到的结果条数"""
         if count is None:
-            STATE.log(f"   {ENG_LABEL.get(engine, engine)} 正在查第{pn}页…")
+            STATE.log(f"   [{keyword}] {ENG_LABEL.get(engine, engine)} 正在查第{pn}页…")
         else:
-            STATE.log(f"   {ENG_LABEL.get(engine, engine)} 正在查第{pn}页（解析到{count}条结果）…")
+            STATE.log(
+                f"   [{keyword}] {ENG_LABEL.get(engine, engine)} 正在查第{pn}页（解析到{count}条结果）…"
+            )
 
     def _ensure_page(self, eng, session, m_session, pages):
         """懒开标签：优先复用浏览器启动自带的默认空白页（导航到目标平台），

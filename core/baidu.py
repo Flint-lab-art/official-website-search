@@ -2,7 +2,7 @@
 
 import random
 import traceback
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from . import config, logger
 from .engine import is_captcha, scroll_trigger, wait_for_captcha
@@ -47,8 +47,18 @@ def _is_elo_official(title, source):
     return any(m in text for m in config.BAIDU_OFFICIAL_MARKS)
 
 
+def _pn_of(url):
+    """从百度结果页 URL 取当前页码（无 pn 参数视为第 1 页）"""
+    try:
+        return int(parse_qs(urlparse(url).query).get("pn", ["0"])[0]) // 10 + 1
+    except Exception:
+        return 1
+
+
 def _next_page(page, page_no):
-    """翻到第 page_no 页（page_no>=2 时点击 #page 页码）"""
+    """翻到第 page_no 页（page_no>=2 时点击 #page 页码）。
+    百度无论实际有几页结果都会渲染 1~10 页码链接，仅判断链接存在会虚报页码——
+    必须校验点击后 URL 的 pn 参数真的前进到第 page_no 页才算翻页成功。"""
     nav = page.locator("#page")
     link = nav.locator("a", has_text=str(page_no)).first
     if link.count() == 0:
@@ -61,7 +71,7 @@ def _next_page(page, page_no):
         return False
     page.wait_for_load_state("domcontentloaded", timeout=20000)
     page.wait_for_timeout(config.PAGE_WAIT_MS + random.randint(0, 1000))
-    return True
+    return _pn_of(page.url) == page_no
 
 
 def run_baidu(session, keyword, shot_dir, skip_evt=None, notify=None, page=None, on_page=None):
